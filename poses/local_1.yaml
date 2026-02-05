@@ -1,0 +1,42 @@
+mapping_mode: 1
+lidar_topic: "/velodyne_points"
+# lidar_topic: "/liorf/mapping/map_4planning"
+frame_id:
+  map: "map"
+  robot: "base_link"
+  odom: "odom"
+  lidar: "velodyne"
+
+preprocess:
+  minZ_: -3.0
+  maxZ_: 2.0
+  lidar_Z: 0
+
+local_map:
+  resolution: 0.4
+  mapLengthX: 60.0
+  mapLengthY: 80.0
+
+global_map:
+  resolution: 0.2
+  mapLengthX: 2000
+  mapLengthY: 2000
+  submapLengthX: 60
+  submapLengthY: 80
+  predictionKernalSize: 2.0
+
+minZ: -3.0
+maxZ: 3.0
+
+
+threadCount: -1
+normal_estimationRadius: 1.5
+stepRadius: 0.3
+
+sensorRangeLimit: 60
+
+heightdiff_threshold: 0.6
+cntratiothreshold: 0.5
+slope_crit: 0.2
+roughness_crit: 0.5
+step_crit: 0.8

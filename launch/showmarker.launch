@@ -1,0 +1,10 @@
+<launch>
+  <param name="robot_scale" value="0.75"/>
+  <param name="pred_alpha" value="0.8"/>
+  <param name="vehicle_height" value="0.8"/>
+
+  <!-- <node pkg="obstacle_mapping" type="show_vehicle_node" name="show_vehicle_node" output="screen"/> -->
+  <node pkg="obstacle_mapping" type="recieve_points" name="recieve_points" output="screen"/>
+  <node pkg="obstacle_mapping" type="publish_points" name="publish_points" output="screen"/>
+
+</launch>

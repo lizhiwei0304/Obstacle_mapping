@@ -1,0 +1,60 @@
+mapping_mode: 3
+pose_mode: 1
+lidar_topic: "/velodyne_points"
+odom_topic: "/liorf/mapping/odometry"
+running_mode: 2
+save_map: true
+
+offline:
+  pcd_path: /home/wxr/proj/terrain/ws_trav/src/obstacle_mapping/test_map/terrain/trench00/trench00dense_gem.pcd
+  elevation_BGK_savepath: /home/wxr/proj/terrain/ws_trav/src/obstacle_mapping/test_map/terrain/trench00/elevation_BGKmap.csv
+  critical_savepath: /home/wxr/proj/terrain/ws_trav/src/obstacle_mapping/test_map/terrain/trench00/criticalmap.csv
+  traversability_savepath: /home/wxr/proj/terrain/ws_trav/src/obstacle_mapping/test_map/terrain/trench00/traversabilitymap.csv
+  obstacle_savepath: /home/wxr/proj/terrain/ws_trav/src/obstacle_mapping/test_map/terrain/trench00/obstaclemap.csv
+  gridmap_loadpath: /home/wxr/proj/terrain/ws_trav/src/obstacle_mapping/test_map/terrain/trench00/elevation_BGKmap.csv
+
+frame_id:
+  map: "map"
+  robot: "base_link"
+  odom: "odom"
+  lidar: "velodyne"
+
+preprocess:
+  minZ: -3.0
+  maxZ: 3.0
+  lidar_Z: 0
+
+local_map:
+  resolution: 0.2
+  mapLengthX: 70.0
+  mapLengthY: 100.0
+
+global_map:
+  resolution: 0.2
+  mapLengthX: 2000
+  mapLengthY: 2000
+  submapLengthX: 60
+  submapLengthY: 80
+  predictionKernalSize: 0.1
+
+
+
+threadCount: -1
+normal_estimationRadius: 1.0
+stepRadius: 0.8
+
+sensorRangeLimit: 100
+
+heightdiff_threshold: 1.4
+cntratiothreshold: 0.5
+cntthreshold: 1
+slope_crit: 0.17
+roughness_crit: 0.06
+step_crit: 100
+traversability_crit: 1.0
+
+slope_crit_fp: 0.3
+roughness_crit_fp: 0.3
+step_crit_fp: 0.4
+traversability_crit_fp: 0.5
+traversability_crit_fp_up: 1.2

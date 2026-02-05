@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<launch>
+    <!-- Visualize a vehicle height map as a grid map -->
+    <node name="show_vehicle" pkg="obstacle_mapping" type="show_robot_map_pose" output="screen">
+        <!-- Robot model CSV configuration -->
+        <param name="robot_csv_path" value="$(find obstacle_mapping)/test_map/vehicles/wheeled_car.csv" />
+        <param name="robot_rows" value="9" />
+        <param name="robot_cols" value="11" />
+        <param name="robot_cell_resolution" value="0.2" />
+        <param name="csv_base_resolution" value="0.2" />
+
+        <!-- Transform initialization -->
+        <param name="transform_matrix_path" value="$(find obstacle_mapping)/poses/T_matrix_init.txt" />
+        <param name="tf_height_offset" value="5.0" />
+        <param name="parent_frame" value="map" />
+        <param name="robot_frame" value="robot_init" />
+
+        <!-- Publication settings -->
+        <param name="robot_map_topic" value="/robot_map_init" />
+        <param name="publish_rate" value="1.0" />
+    </node>
+    
+    <!-- RViz visualization -->
+        <node name="show_vehicle_rviz" pkg="rviz" type="rviz"
+                    args="-d $(find obstacle_mapping)/rviz/show_vehicles.rviz" output="screen" />
+</launch>

@@ -1,0 +1,9 @@
+<launch>
+  <param name="filepath" value="/home/wxr/ivrc/6t/slam_ws/maps/0507driving01map.pcd"/>
+  <param name="resolution" value="1.0"/>
+
+  <node pkg="obstacle_mapping" type="showpcd" name="showpcd" output="screen"/>
+
+  <node pkg="rviz" type="rviz" name="test_rviz" args="-d $(find obstacle_mapping)/rviz/showpcd.rviz"/>
+
+</launch>

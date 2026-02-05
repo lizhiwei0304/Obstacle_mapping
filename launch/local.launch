@@ -1,0 +1,11 @@
+<launch>
+  <param name="use_sim_time" value="true" />
+
+  <node pkg="obstacle_mapping" type="obstacle_mapping_node" name="obstacle_mapping_node" output="screen">
+    <rosparam file="$(find obstacle_mapping)/config/local_1.yaml" command="load" />
+  </node>
+  <node pkg="rviz" type="rviz" name="test_rviz" args="-d $(find obstacle_mapping)/rviz/test.rviz"/>
+
+  <node pkg="tf2_ros" type="static_transform_publisher" name="robot_to_lidar" args="0 0 0 0 0.0 0 base_link map"/>
+
+</launch>

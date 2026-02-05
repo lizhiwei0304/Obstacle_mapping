@@ -1,0 +1,13 @@
+<launch>
+  <param name="lidar_topic" value="/lidar_cloud_calibrated" />
+
+  <node pkg="obstacle_mapping" type="key_pub_node" name="key_pub_node" output="screen"/>
+
+  <node pkg="obstacle_mapping" type="obstacle_mapping_node" name="obstacle_mapping_node" output="screen"/>
+
+  <node pkg="obstacle_mapping" type="gridmap_saver_node" name="gridmap_saver_node" output="screen"/>
+
+  <node pkg="rviz" type="rviz" name="test_rviz" args="-d $(find obstacle_mapping)/rviz/test.rviz"/>
+
+  <node pkg="tf2_ros" type="static_transform_publisher" name="robot_to_lidar" args="0 0 0 0 0.0 0 base_link velodyne"/>
+</launch>

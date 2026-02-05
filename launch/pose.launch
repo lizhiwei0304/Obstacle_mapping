@@ -1,0 +1,71 @@
+<launch>
+  <param name="vehicle_type" value="1"/>
+   <!-- pipeline -->
+  <param name="query_pos_x" value="-5.0"/>  
+  <param name="query_pos_y" value="29.0"/> 
+  <!-- citical-slope -->
+  <!-- <param name="query_pos_x" value="-1.0"/>  
+  <param name="query_pos_y" value="16.0"/>  -->
+  <!-- citical-trench -->
+  <!-- <param name="query_pos_x" value="-1.2"/>  
+  <param name="query_pos_y" value="7.2"/>  -->
+  <!-- trenchwalltest -->
+  <!-- <param name="query_pos_x" value="-11.2"/>  
+  <param name="query_pos_y" value="5.0"/>  -->
+  <!-- citical-wall -->
+  <!-- <param name="query_pos_x" value="2.4"/>  
+  <param name="query_pos_y" value="5.2"/>  -->
+  <!-- into1 -->
+  <!-- <param name="query_pos_x" value="-13"/>
+  <param name="query_pos_y" value="23"/>   -->
+  <!-- <param name="query_pos_x" value="-10"/>
+  <param name="query_pos_y" value="23"/>   -->
+  <!-- into2 -->
+  <!-- <param name="query_pos_x" value="5.5"/>  
+  <param name="query_pos_y" value="5.3"/> -->
+  <!-- <param name="query_pos_x" value="1"/>  
+  <param name="query_pos_y" value="2"/> -->
+  <param name="query_pos_z" value="90.0"/>
+  <param name="save_pose" value="true"/>
+  <param name="lidar_z" value="0"/>
+  <param name="d_touch_gap" value="0.05"/>
+  <param name="nv_scale" value="2.0"/>
+  <param name="terrainmap_file" value="/home/wxr/proj/terrain/ws_trav/src/obstacle_mapping/test_map/terrain/pipeline/elevation_BGKmap.csv"/>
+  <param name="robot_scale" value="0.7"/>
+  <!-- <param name="robot_scale" value="10"/> -->
+  <!-- <param name="robot_scale" value="0.000006"/> -->
+  <param name="pred_alpha" value="1.0"/>
+  <param name="vehicle_height" value="0.8"/>
+  <!-- trenchwall uneven-->
+  <!-- <param name="map_length_X" value="40.0"/>
+  <param name="map_length_Y" value="60.0"/> -->
+  <!-- slope 40 60有bug-->
+  <!-- <param name="map_length_X" value="40.0"/>
+  <param name="map_length_Y" value="50.0"/> -->
+  <!-- pipeline -->
+  <param name="map_length_X" value="30.0"/>
+  <param name="map_length_Y" value="70.0"/>
+  <param name="show_init" value="1"/>
+
+  <!-- <node pkg="obstacle_mapping" type="show_robot_map_pose" name="show_robot_map_pose" output="screen"/> -->
+ 
+  <node pkg="obstacle_mapping" type="pose_prediction_node" name="pose_prediction_node" output="screen"/> 
+
+  <node pkg="obstacle_mapping" type="show_vehicle_node" name="show_vehicle_node" output="screen"/>
+  <!-- critical-slope
+  <node pkg="tf2_ros" type="static_transform_publisher" name="robot_to_lidar" args="0 0 0.3 1.57 0.07 0 robot base_link"/> -->
+  <!-- critical-trench00
+  <node pkg="tf2_ros" type="static_transform_publisher" name="robot_to_lidar" args="0 0 0.3 1.57 -0.05 -0.03 robot base_link"/>  -->
+  <!-- critical-wall00 -->
+  <!-- <node pkg="tf2_ros" type="static_transform_publisher" name="robot_to_lidar" args="0 0 0.3 1.57 -0.05 0.04 robot base_link"/>  -->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="robot_to_lidar" args="0 0 0.3 1.57 0.0 0.0 robot base_link"/> 
+  <node pkg="tf2_ros" type="static_transform_publisher" name="robot_to_lidar_gt" args="0 0 0.3 1.57 0.00 0.00 robot base_link_gt"/> 
+  <!-- <node pkg="tf2_ros" type="static_transform_publisher" name="robot0_to_lidar" args="0 0 0.3 1.57 0.00 0 robot0 base_link0"/> -->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="robot_to_lidar_init" args="0 0 0 1.57 0 0 robot_init base_link_init"/>
+  <node pkg="tf2_ros" type="static_transform_publisher" name="robot_to_lidar_init_1" args="0 0 0.3 0 0 0 base_link_init base_link_init1"/>
+  <!-- <node pkg="tf2_ros" type="static_transform_publisher" name="submap_map" args="-5 29 -0.5 3.14 0 0 map submap1"/> -->
+  <!-- <node pkg="tf2_ros" type="static_transform_publisher" name="robot_above" args="0 0 1.0 0 0 0 robot_above robot"/> -->
+
+  <node pkg="rviz" type="rviz" name="test_rviz" args="-d $(find obstacle_mapping)/rviz/pose.rviz"/>
+
+</launch>

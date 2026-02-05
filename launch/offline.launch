@@ -1,0 +1,21 @@
+<launch>
+  <param name="use_sim_time" value="true" />
+  <param name="robot_scale" value="0.75"/>
+  <param name="point_scale" value="0.75"/>
+  <param name="pred_alpha" value="0.8"/>
+  <param name="vehicle_height" value="0.8"/>
+  
+  <node pkg="obstacle_mapping" type="obstacle_mapping_node" name="obstacle_mapping_node" output="screen">
+    <rosparam file="$(find obstacle_mapping)/config/offline.yaml" command="load" />
+  </node>
+
+  <!-- <node pkg="obstacle_mapping" type="show_vehicle_node" name="show_vehicle_node" output="screen"/> -->
+
+  <node pkg="obstacle_mapping" type="recieve_points" name="recieve_points" output="screen"/>
+  <node pkg="obstacle_mapping" type="publish_points" name="publish_points" output="screen"/>
+
+  <node pkg="tf2_ros" type="static_transform_publisher" name="robot_to_lidar" args="0 0 0.5 0 0 0 base_link map"/>
+
+  <node pkg="rviz" type="rviz" name="test_rviz" args="-d $(find obstacle_mapping)/rviz/test.rviz"/>
+
+</launch>

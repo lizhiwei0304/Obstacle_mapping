@@ -1,0 +1,37 @@
+<launch>
+  <param name="vehicle_type" value="1"/>
+  <param name="position_file" value="/home/wxr/proj/terrain/ws_trav/src/obstacle_mapping/poses/position/trench_pos.txt"/>
+  <param name="elevation_BGK_path" value="/home/wxr/proj/terrain/ws_trav/src/obstacle_mapping/test_map/terrain/wall00/elevation_BGKmap.csv"/>
+  <param name="critical_path" value="/home/wxr/proj/terrain/ws_trav/src/obstacle_mapping/test_map/terrain/wall00/criticalmap.csv"/>
+  <param name="traversability_path" value="/home/wxr/proj/terrain/ws_trav/src/obstacle_mapping/test_map/terrain/wall00/traversabilitymap.csv"/>
+  <param name="obstacle_path" value="/home/wxr/proj/terrain/ws_trav/src/obstacle_mapping/test_map/terrain/wall00/obstaclemap.csv"/>
+  <param name="save_pose" value="true"/>
+  <param name="lidar_z" value="0"/>
+  <param name="terrainmap_file" value="/home/wxr/proj/terrain/ws_trav/src/obstacle_mapping/test_map/terrain/wall00/elevation_BGKmap.csv"/>
+  <param name="robot_scale" value="0.75"/>
+  <param name="pred_alpha" value="0.8"/>
+  <param name="vehicle_height" value="0.8"/>
+  <param name="yaw" value="0"/>
+  <!-- trench00 -->
+  <!-- <param name="roll_crit" value="20"/>
+  <param name="pitch_crit" value="25"/> -->
+  <param name="roll_crit" value="20"/>
+  <param name="pitch_crit" value="25"/>
+  <param name="idx0_min" value="135"/>
+  <param name="idx0_max" value="180"/>
+  <param name="idx1_min" value="110"/>
+  <param name="idx1_max" value="150"/>
+  <param name="map_length_X" value="40"/>
+  <param name="map_length_Y" value="60"/>
+
+  <!-- <node pkg="obstacle_mapping" type="key_pub_node" name="key_pub_node" output="screen"/> -->
+  
+  <node pkg="obstacle_mapping" type="pose_prediction" name="pose_prediction" output="screen"/>
+
+  <node pkg="tf2_ros" type="static_transform_publisher" name="robot_to_lidar" args="0 0 0.5 0 0 0 base_link map"/>
+
+  <node pkg="obstacle_mapping" type="show_vehicle_node" name="show_vehicle_node" output="screen"/>
+
+  <node pkg="rviz" type="rviz" name="test_rviz" args="-d $(find obstacle_mapping)/rviz/pose_offline.rviz"/>
+
+</launch>

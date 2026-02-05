@@ -1,0 +1,7 @@
+grid_map_filters:
+  - name: inpaint
+    type: gridMapCv/InpaintFilter
+    params:
+      input_layer: elevation
+      output_layer: elevation_inpainted
+      radius: 0.4
