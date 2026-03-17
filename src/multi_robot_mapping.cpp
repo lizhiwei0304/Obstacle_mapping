@@ -111,25 +111,55 @@ Mapping::Mapping(ros::NodeHandle &nh)
   ROS_INFO("Subscribed to origin topic: %s", origin_topic_.c_str());
   origin_sub_ = nh_.subscribe<geometry_msgs::PointStamped>(origin_topic_, 10, &Mapping::originCallback, this);
 
-  // Subscribe to point cloud topics
+  ROS_INFO("Subscribed to viewpoint_vis topic: %s", viewpoint_vis_topic_.c_str());
+  viewpoint_vis_cloud_sub_ = nh_.subscribe(viewpoint_vis_topic_, 5, &Mapping::viewpointVisCloudCallback, this);
+
+  // // Subscribe to point cloud topics
+  // ROS_INFO("Subscribing to point cloud and odometry topics with time synchronization...");
+
+  // // Create message filters for synchronized subscription
+  // cloud_filter_sub_ = std::make_shared<message_filters::Subscriber<sensor_msgs::PointCloud2>>(
+  //     nh_, scan_topic_, queue_size_);
+
+  // odom_filter_sub_ = std::make_shared<message_filters::Subscriber<nav_msgs::Odometry>>(
+  //     nh_, "/vehicle0/state_estimation", queue_size_);
+
+  // // Create approximate time synchronizer (allows small time differences)
+  // // Queue size of 10 means it will try to synchronize the last 10 messages from each topic
+  // sync_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(
+  //     SyncPolicy(queue_size_), *cloud_filter_sub_, *odom_filter_sub_);
+
+  // sync_->registerCallback(boost::bind(&Mapping::synchronizedCloudOdomCallback, this, _1, _2));
+
   ROS_INFO("Subscribing to point cloud and odometry topics with time synchronization...");
 
-  // Create message filters for synchronized subscription
+  int queue_size_ = 10;
   cloud_filter_sub_ = std::make_shared<message_filters::Subscriber<sensor_msgs::PointCloud2>>(
       nh_, scan_topic_, queue_size_);
 
   odom_filter_sub_ = std::make_shared<message_filters::Subscriber<nav_msgs::Odometry>>(
       nh_, "/vehicle0/state_estimation", queue_size_);
 
-  // Create approximate time synchronizer (allows small time differences)
-  // Queue size of 10 means it will try to synchronize the last 10 messages from each topic
-  sync_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(
-      SyncPolicy(queue_size_), *cloud_filter_sub_, *odom_filter_sub_);
+  // 新增两路点云
+  terrain_filter_sub_ = std::make_shared<message_filters::Subscriber<sensor_msgs::PointCloud2>>(
+      nh_, "/vehicle0/terrain_map", queue_size_);
 
-  sync_->registerCallback(boost::bind(&Mapping::synchronizedCloudOdomCallback, this, _1, _2));
+  terrain_ext_filter_sub_ = std::make_shared<message_filters::Subscriber<sensor_msgs::PointCloud2>>(
+      nh_, "/vehicle0/terrain_map_ext", queue_size_);
+
+  // 4路同步器
+  sync_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(
+      SyncPolicy(queue_size_),
+      *cloud_filter_sub_,
+      *odom_filter_sub_,
+      *terrain_filter_sub_,
+      *terrain_ext_filter_sub_);
+
+  // callback 变成 4 个参数
+  sync_->registerCallback(boost::bind(&Mapping::synchronizedCloudOdomCallback, this, _1, _2, _3, _4));
 
   // Create publisher for grid map
-  gridmap_pub_ = nh_.advertise<grid_map_msgs::GridMap>("/trav_map", 10);
+  gridmap_pub_ = nh_.advertise<grid_map_msgs::GridMap>("trav_map", 10);
 
   ROS_INFO("Successfully subscribed to: %s (synchronized)", scan_topic_.c_str());
   ROS_INFO("Successfully subscribed to: /vehicle0/state_estimation (synchronized)");
@@ -175,6 +205,7 @@ void Mapping::loadParameters()
   // Load topic settings
   nh_.param<std::string>("scan_topic", scan_topic_, "/vehicle0/registered_scan");
   nh_.param<std::string>("origin_topic", origin_topic_, "/vehicle0/tare_planner_node/viewpoint_origin");
+  nh_.param<std::string>("viewpoint_vis_topic", viewpoint_vis_topic_, "/vehicle0/viewpoint_vis_cloud");
   nh_.param<std::string>("frame_id", frame_id_, "map");
   nh_.param<int>("queue_size", queue_size_, 200);
 
@@ -419,10 +450,115 @@ void Mapping::originCallback(const geometry_msgs::PointStampedConstPtr &msg)
   }
 }
 
-void Mapping::synchronizedCloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr &cloud_msg,
-                                            const nav_msgs::OdometryConstPtr &odom_msg)
+void Mapping::viewpointVisCloudCallback(const sensor_msgs::PointCloud2ConstPtr &msg)
 {
-  processSynchronizedMessages(cloud_msg, odom_msg);
+  // 转成 PCL（按你的需求：PointXYZI）
+  pcl::PointCloud<pcl::PointXYZI>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZI>());
+  try
+  {
+    pcl::fromROSMsg(*msg, *cloud);
+  }
+  catch (const std::exception &e)
+  {
+    ROS_WARN_STREAM("viewpointVisCloudCallback: fromROSMsg failed: " << e.what());
+    return;
+  }
+
+  // 防御：去掉 NaN/Inf（可选但推荐）
+  std::vector<int> idx;
+  pcl::removeNaNFromPointCloud(*cloud, *cloud, idx);
+
+  // 缓存最新一帧（线程安全）
+  {
+    std::lock_guard<std::mutex> lk(viewpoint_vis_mutex_);
+    *latest_viewpoint_vis_cloud_ = *cloud; // 深拷贝到缓存
+    latest_viewpoint_vis_stamp_ = msg->header.stamp;
+    latest_viewpoint_vis_frame_id_ = msg->header.frame_id;
+    has_viewpoint_vis_.store(true, std::memory_order_release);
+  }
+
+  ROS_INFO("Received synchronized point cloud.");
+}
+
+// void Mapping::synchronizedCloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr &cloud_msg,
+//                                             const nav_msgs::OdometryConstPtr &odom_msg)
+// {
+//   processSynchronizedMessages(cloud_msg, odom_msg);
+// }
+
+void Mapping::synchronizedCloudOdomCallback(
+    const sensor_msgs::PointCloud2ConstPtr &cloud_msg,
+    const nav_msgs::OdometryConstPtr &odom_msg,
+    const sensor_msgs::PointCloud2ConstPtr &terrain_msg,
+    const sensor_msgs::PointCloud2ConstPtr &terrain_ext_msg)
+{
+  using PointT = pcl::PointXYZI; // 如果你的点不带 intensity，就换成 pcl::PointXYZ
+
+  // -------- 1) ROS msg -> PCL --------
+  pcl::PointCloud<PointT>::Ptr cloud(new pcl::PointCloud<PointT>());
+  pcl::fromROSMsg(*cloud_msg, *cloud);
+
+  pcl::PointCloud<PointT>::Ptr terrain(new pcl::PointCloud<PointT>());
+  if (terrain_msg && !terrain_msg->data.empty())
+    pcl::fromROSMsg(*terrain_msg, *terrain);
+
+  pcl::PointCloud<PointT>::Ptr terrain_ext(new pcl::PointCloud<PointT>());
+  if (terrain_ext_msg && !terrain_ext_msg->data.empty())
+    pcl::fromROSMsg(*terrain_ext_msg, *terrain_ext);
+
+  // -------- 2) 可选：frame_id 检查（不一致就先别拼，避免乱图）--------
+  const std::string &base_frame = cloud_msg->header.frame_id;
+  if (terrain_msg && !terrain_msg->header.frame_id.empty() && terrain_msg->header.frame_id != base_frame)
+  {
+    ROS_WARN_STREAM_THROTTLE(1.0, "terrain_map frame_id != scan frame_id. Skip merge. "
+                                      << terrain_msg->header.frame_id << " vs " << base_frame);
+    terrain->clear();
+  }
+  if (terrain_ext_msg && !terrain_ext_msg->header.frame_id.empty() && terrain_ext_msg->header.frame_id != base_frame)
+  {
+    ROS_WARN_STREAM_THROTTLE(1.0, "terrain_map_ext frame_id != scan frame_id. Skip merge. "
+                                      << terrain_ext_msg->header.frame_id << " vs " << base_frame);
+    terrain_ext->clear();
+  }
+
+  // -------- 3) 合并三路点云 --------
+  terrain->clear();
+  terrain_ext->clear();
+  
+  pcl::PointCloud<PointT>::Ptr merged(new pcl::PointCloud<PointT>());
+  merged->reserve(cloud->size() + terrain->size() + terrain_ext->size());
+
+  *merged += *cloud;
+  if (!terrain->empty())
+    *merged += *terrain;
+  if (!terrain_ext->empty())
+    *merged += *terrain_ext;
+
+  // -------- 4) 滤波：先去 NaN，再体素下采样 --------
+  // 4.1 remove NaN/Inf
+  std::vector<int> index;
+  pcl::removeNaNFromPointCloud(*merged, *merged, index);
+
+  // 4.2 voxel grid
+  pcl::PointCloud<PointT>::Ptr filtered(new pcl::PointCloud<PointT>());
+  pcl::VoxelGrid<PointT> vg;
+  const float leaf = 0.2f; // 体素大小按你需要调，比如 0.1 / 0.2 / 0.3
+  vg.setLeafSize(leaf, leaf, leaf);
+  vg.setInputCloud(merged);
+  vg.filter(*filtered);
+
+  // -------- 5) PCL -> ROS msg --------
+  sensor_msgs::PointCloud2Ptr filtered_msg(new sensor_msgs::PointCloud2());
+  pcl::toROSMsg(*filtered, *filtered_msg);
+
+  // 保持 header 一致，保证下游 tf、时间戳逻辑不乱
+  filtered_msg->header = cloud_msg->header;
+
+  // Ptr -> ConstPtr（一般 boost::shared_ptr 允许这样转）
+  sensor_msgs::PointCloud2ConstPtr filtered_const(filtered_msg);
+
+  // -------- 6) 传入你的处理流程 --------
+  processSynchronizedMessages(filtered_const, odom_msg);
 }
 
 void Mapping::processSynchronizedMessages(const sensor_msgs::PointCloud2ConstPtr &cloud_msg,
@@ -722,10 +858,9 @@ void Mapping::processPointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud
     // -----------------------
     // 只保留 z 在 [min_z_, max_z_] 的点
     // 常用于剔除异常高点/地面以下噪声/天花板等
-    if (point.z < min_z_ || point.z > max_z_)
-    {
+    double dz = point.z - current_pos.z(); // 或 odom 里的 z
+    if (dz < min_z_ || dz > max_z_)
       continue;
-    }
 
     // -----------------------
     // [2.2] 最大观测距离过滤（平面距离）
@@ -2630,7 +2765,8 @@ Eigen::Vector3d Mapping::fitPlane(const std::vector<Eigen::Vector3d> &points)
 void Mapping::publishGridMap()
 {
   grid_map_msgs::GridMap message;
-  if (!buildGridMapMessage(message))
+  // if (!buildGridMapMessage(message))
+  if (!buildGridMapFromViewpointCloud(message))
   {
     return;
   }
@@ -2718,137 +2854,18 @@ void Mapping::publishGridMap()
 //   return true;
 // }
 
-bool Mapping::buildGridMapMessage(grid_map_msgs::GridMap &message)
-{
-  // ==========================================
-  // [0] 检查 origin 是否已收到
-  // ==========================================
-  if (!has_origin_.load(std::memory_order_acquire))
-  {
-    ROS_WARN_THROTTLE(2.0, "No viewpoint origin received yet, skip publishing.");
-    return false;
-  }
-
-  // 把 origin 的快照取出来（左下角）
-  Eigen::Vector3d origin;
-  ros::Time origin_stamp;
-  {
-    std::lock_guard<std::mutex> lk(origin_mutex_);
-    origin = latest_origin_;
-    origin_stamp = latest_origin_stamp_;
-  }
-
-  // ==========================================
-  // [1] 加锁：保护 height_map_ 的读操作
-  // ==========================================
-  std::lock_guard<std::mutex> lock(gridmap_publish_mutex_);
-
-  // ==========================================
-  // [2] 检查 size 合法性（用 ViewPoint 的窗口大小）
-  // ==========================================
-  if (viewpoint_grid_size_x_ <= 0.0 || viewpoint_grid_size_y_ <= 0.0)
-  {
-    ROS_WARN_THROTTLE(2.0, "Invalid viewpoint grid size: x=%.3f, y=%.3f",
-                      viewpoint_grid_size_x_, viewpoint_grid_size_y_);
-    return false;
-  }
-
-  // submap 的长宽（单位：m）
-  grid_map::Length submap_length(viewpoint_grid_size_x_, viewpoint_grid_size_y_);
-
-  // ==========================================
-  // [3] origin(左下角) -> submap center(中心点)
-  // ==========================================
-  grid_map::Position submap_center(origin.x() + 0.5 * viewpoint_grid_size_x_,
-                                   origin.y() + 0.5 * viewpoint_grid_size_y_);
-
-  // ==========================================
-  // [4] 可选但强烈建议：clamp center，防止窗口越界导致 getSubmap 失败
-  // ==========================================
-  const grid_map::Position map_center = height_map_.getPosition();
-  const grid_map::Length map_len = height_map_.getLength();
-
-  // 如果窗口比全图还大，直接失败（否则怎么裁都裁不出来）
-  if (submap_length.x() > map_len.x() || submap_length.y() > map_len.y())
-  {
-    ROS_WARN_THROTTLE(2.0,
-                      "Submap larger than height_map. submap=[%.2f %.2f], map=[%.2f %.2f]",
-                      submap_length.x(), submap_length.y(), map_len.x(), map_len.y());
-    return false;
-  }
-
-  const double map_min_x = map_center.x() - 0.5 * map_len.x();
-  const double map_max_x = map_center.x() + 0.5 * map_len.x();
-  const double map_min_y = map_center.y() - 0.5 * map_len.y();
-  const double map_max_y = map_center.y() + 0.5 * map_len.y();
-
-  const double half_x = 0.5 * submap_length.x();
-  const double half_y = 0.5 * submap_length.y();
-
-  // clamp center 到合法范围
-  submap_center.x() = std::min(std::max(submap_center.x(), map_min_x + half_x), map_max_x - half_x);
-  submap_center.y() = std::min(std::max(submap_center.y(), map_min_y + half_y), map_max_y - half_y);
-
-  // ==========================================
-  // [5] 从全局 height_map_ 裁剪局部 submap（按 origin+size）
-  // ==========================================
-  bool success = false;
-  grid_map::GridMap local_map = height_map_.getSubmap(submap_center, submap_length, success);
-
-  if (!success)
-  {
-    ROS_WARN_THROTTLE(1.0,
-                      "getSubmap failed. origin=[%.2f %.2f], center=[%.2f %.2f], size=[%.2f %.2f]",
-                      origin.x(), origin.y(),
-                      submap_center.x(), submap_center.y(),
-                      submap_length.x(), submap_length.y());
-    return false;
-  }
-
-  // 时间戳对齐 origin（可选）
-  local_map.setTimestamp(origin_stamp.toNSec());
-
-  // ==========================================
-  // [6] 只保留白名单层（减少消息体积）
-  // ==========================================
-  static const std::vector<std::string> layers_to_publish = {
-      "elevation",
-      "elevation_BGK",
-      "slope",
-      "roughness",
-      "step",
-      "traversability",
-      "traversability_fine_wheeled",
-      "traversability_fine_tracked",
-      "critical"};
-
-  const auto existing_layers = local_map.getLayers();
-  for (const auto &layer : existing_layers)
-  {
-    if (std::find(layers_to_publish.begin(), layers_to_publish.end(), layer) == layers_to_publish.end())
-    {
-      local_map.erase(layer);
-    }
-  }
-
-  // ==========================================
-  // [7] 转 ROS 消息
-  // ==========================================
-  grid_map::GridMapRosConverter::toMessage(local_map, message);
-  return true;
-}
-
 // bool Mapping::buildGridMapMessage(grid_map_msgs::GridMap &message)
 // {
-//   // ==========================================================
-//   // [0] 获取最新 origin（ViewPoint 左下角），没有就不发布
-//   // ==========================================================
+//   // ==========================================
+//   // [0] 检查 origin 是否已收到
+//   // ==========================================
 //   if (!has_origin_.load(std::memory_order_acquire))
 //   {
-//     ROS_WARN_THROTTLE(2.0, "No viewpoint origin yet, skip grid map publish.");
+//     ROS_WARN_THROTTLE(2.0, "No viewpoint origin received yet, skip publishing.");
 //     return false;
 //   }
 
+//   // 把 origin 的快照取出来（左下角）
 //   Eigen::Vector3d origin;
 //   ros::Time origin_stamp;
 //   {
@@ -2857,185 +2874,579 @@ bool Mapping::buildGridMapMessage(grid_map_msgs::GridMap &message)
 //     origin_stamp = latest_origin_stamp_;
 //   }
 
-//   // ==========================================================
-//   // [1] 加锁保护 height_map_（读）
-//   // ==========================================================
+//   // ==========================================
+//   // [1] 加锁：保护 height_map_ 的读操作
+//   // ==========================================
 //   std::lock_guard<std::mutex> lock(gridmap_publish_mutex_);
 
-//   // ==========================================================
-//   // [2] 输出地图几何：严格对齐 ViewPoint（res + origin）
-//   //     grid_map 只有一个二维 resolution，所以用 viewpoint_resolution_x_
-//   // ==========================================================
-//   const double vp_res_x = viewpoint_resolution_x_;
-//   const double vp_res_y = viewpoint_resolution_y_;
+//   // ==========================================
+//   // [2] 检查 size 合法性（用 ViewPoint 的窗口大小）
+//   // ==========================================
+//   if (viewpoint_grid_size_x_ <= 0.0 || viewpoint_grid_size_y_ <= 0.0)
+//   {
+//     ROS_WARN_THROTTLE(2.0, "Invalid viewpoint grid size: x=%.3f, y=%.3f",
+//                       viewpoint_grid_size_x_, viewpoint_grid_size_y_);
+//     return false;
+//   }
 
-//   double out_res = vp_res_x;
-//   if (std::fabs(vp_res_x - vp_res_y) > 1e-9)
+//   // submap 的长宽（单位：m）
+//   grid_map::Length submap_length(viewpoint_grid_size_x_, viewpoint_grid_size_y_);
+
+//   // ==========================================
+//   // [3] origin(左下角) -> submap center(中心点)
+//   // ==========================================
+//   grid_map::Position submap_center(origin.x() + 0.5 * viewpoint_grid_size_x_,
+//                                    origin.y() + 0.5 * viewpoint_grid_size_y_);
+
+//   // ==========================================
+//   // [4] 可选但强烈建议：clamp center，防止窗口越界导致 getSubmap 失败
+//   // ==========================================
+//   const grid_map::Position map_center = height_map_.getPosition();
+//   const grid_map::Length map_len = height_map_.getLength();
+
+//   // 如果窗口比全图还大，直接失败（否则怎么裁都裁不出来）
+//   if (submap_length.x() > map_len.x() || submap_length.y() > map_len.y())
 //   {
 //     ROS_WARN_THROTTLE(2.0,
-//                       "ViewPoint res x!=y (%.4f vs %.4f). grid_map uses single res, using res_x.",
-//                       vp_res_x, vp_res_y);
-//   }
-
-//   if (out_res <= 0.0 || viewpoint_number_x_ <= 0 || viewpoint_number_y_ <= 0)
-//   {
-//     ROS_WARN_THROTTLE(2.0, "Invalid viewpoint params: res=%.4f, nx=%d, ny=%d",
-//                       out_res, viewpoint_number_x_, viewpoint_number_y_);
+//                       "Submap larger than height_map. submap=[%.2f %.2f], map=[%.2f %.2f]",
+//                       submap_length.x(), submap_length.y(), map_len.x(), map_len.y());
 //     return false;
 //   }
 
-//   // 窗口大小（米），严格用 number * ViewPoint res
-//   const double size_x = static_cast<double>(viewpoint_number_x_) * out_res;
-//   const double size_y = static_cast<double>(viewpoint_number_y_) * out_res;
+//   const double map_min_x = map_center.x() - 0.5 * map_len.x();
+//   const double map_max_x = map_center.x() + 0.5 * map_len.x();
+//   const double map_min_y = map_center.y() - 0.5 * map_len.y();
+//   const double map_max_y = map_center.y() + 0.5 * map_len.y();
 
-//   // 让输出 map 的 min corner = origin（左下角）
-//   const grid_map::Position out_center(origin.x() + 0.5 * size_x,
-//                                       origin.y() + 0.5 * size_y);
+//   const double half_x = 0.5 * submap_length.x();
+//   const double half_y = 0.5 * submap_length.y();
 
-//   grid_map::GridMap out_map;
-//   out_map.setFrameId(height_map_.getFrameId()); // 若你希望固定 "map"，也可以写 "map"
-//   out_map.setTimestamp(origin_stamp.toNSec());
-//   out_map.setGeometry(grid_map::Length(size_x, size_y), out_res, out_center);
+//   // clamp center 到合法范围
+//   submap_center.x() = std::min(std::max(submap_center.x(), map_min_x + half_x), map_max_x - half_x);
+//   submap_center.y() = std::min(std::max(submap_center.y(), map_min_y + half_y), map_max_y - half_y);
 
-//   // ==========================================================
-//   // [3] 选择发布层 + 每层的 pooling 策略
-//   //     你要求 traversability 系列由 MIN 改为 MAX
-//   // ==========================================================
-//   enum class PoolType
+//   // ==========================================
+//   // [5] 从全局 height_map_ 裁剪局部 submap（按 origin+size）
+//   // ==========================================
+//   bool success = false;
+//   grid_map::GridMap local_map = height_map_.getSubmap(submap_center, submap_length, success);
+
+//   if (!success)
 //   {
-//     MIN,
-//     MAX,
-//     MEAN
-//   };
-
-//   struct LayerPolicy
-//   {
-//     std::string name;
-//     PoolType type;
-//   };
-
-//   const std::vector<LayerPolicy> policies = {
-//       {"elevation", PoolType::MEAN},
-//       {"elevation_BGK", PoolType::MEAN},
-//       {"slope", PoolType::MEAN},
-//       {"roughness", PoolType::MEAN},
-//       {"step", PoolType::MAX},
-//       {"traversability", PoolType::MAX},
-//       {"traversability_fine_wheeled", PoolType::MAX},
-//       {"traversability_fine_tracked", PoolType::MAX},
-//       {"critical", PoolType::MAX},
-//   };
-
-//   // 只添加 height_map_ 中实际存在的层
-//   std::vector<LayerPolicy> used;
-//   used.reserve(policies.size());
-//   for (const auto &p : policies)
-//   {
-//     if (height_map_.exists(p.name))
-//     {
-//       out_map.add(p.name, std::numeric_limits<float>::quiet_NaN());
-//       used.push_back(p);
-//     }
-//   }
-
-//   if (used.empty())
-//   {
-//     ROS_WARN_THROTTLE(2.0, "None of publish layers exist in height_map_.");
+//     ROS_WARN_THROTTLE(1.0,
+//                       "getSubmap failed. origin=[%.2f %.2f], center=[%.2f %.2f], size=[%.2f %.2f]",
+//                       origin.x(), origin.y(),
+//                       submap_center.x(), submap_center.y(),
+//                       submap_length.x(), submap_length.y());
 //     return false;
 //   }
 
-//   // ==========================================================
-//   // [4] 块聚合 pooling：每个 coarse cell 覆盖 out_res × out_res 的窗口
-//   //     在高分辨率 height_map_ 上聚合得到一个值
-//   // ==========================================================
-//   auto isFinite = [](float v) -> bool
-//   { return std::isfinite(v); };
+//   // 时间戳对齐 origin（可选）
+//   local_map.setTimestamp(origin_stamp.toNSec());
 
-//   auto poolLayerOnSubmap = [&](const std::string &layer,
-//                                const grid_map::SubmapGeometry &subgeom,
-//                                PoolType type) -> float
+//   // ==========================================
+//   // [6] 只保留白名单层（减少消息体积）
+//   // ==========================================
+//   static const std::vector<std::string> layers_to_publish = {
+//       "elevation",
+//       "elevation_BGK",
+//       "slope",
+//       "roughness",
+//       "step",
+//       "traversability",
+//       "traversability_fine_wheeled",
+//       "traversability_fine_tracked",
+//       "critical"};
+
+//   const auto existing_layers = local_map.getLayers();
+//   for (const auto &layer : existing_layers)
 //   {
-//     grid_map::SubmapIterator it(subgeom);
-
-//     if (type == PoolType::MEAN)
+//     if (std::find(layers_to_publish.begin(), layers_to_publish.end(), layer) == layers_to_publish.end())
 //     {
-//       double sum = 0.0;
-//       int cnt = 0;
-//       for (; !it.isPastEnd(); ++it)
-//       {
-//         const grid_map::Index idx = *it;
-//         const float v = height_map_.at(layer, idx);
-//         if (!isFinite(v))
-//           continue;
-//         sum += v;
-//         cnt++;
-//       }
-//       return (cnt > 0) ? static_cast<float>(sum / cnt)
-//                        : std::numeric_limits<float>::quiet_NaN();
-//     }
-//     else if (type == PoolType::MIN)
-//     {
-//       float best = std::numeric_limits<float>::infinity();
-//       bool has = false;
-//       for (; !it.isPastEnd(); ++it)
-//       {
-//         const grid_map::Index idx = *it;
-//         const float v = height_map_.at(layer, idx);
-//         if (!isFinite(v))
-//           continue;
-//         best = std::min(best, v);
-//         has = true;
-//       }
-//       return has ? best : std::numeric_limits<float>::quiet_NaN();
-//     }
-//     else // MAX
-//     {
-//       float best = -std::numeric_limits<float>::infinity();
-//       bool has = false;
-//       for (; !it.isPastEnd(); ++it)
-//       {
-//         const grid_map::Index idx = *it;
-//         const float v = height_map_.at(layer, idx);
-//         if (!isFinite(v))
-//           continue;
-//         best = std::max(best, v);
-//         has = true;
-//       }
-//       return has ? best : std::numeric_limits<float>::quiet_NaN();
-//     }
-//   };
-
-//   const grid_map::Length cell_window(out_res, out_res);
-
-//   for (grid_map::GridMapIterator it(out_map); !it.isPastEnd(); ++it)
-//   {
-//     const grid_map::Index idx_out(*it);
-
-//     // coarse cell 中心点坐标
-//     grid_map::Position cell_center;
-//     out_map.getPosition(idx_out, cell_center);
-
-//     // 如果高分辨率图不覆盖该区域，保持 NaN
-//     if (!height_map_.isInside(cell_center))
-//       continue;
-
-//     bool ok = false;
-//     grid_map::SubmapGeometry subgeom(height_map_, cell_center, cell_window, ok);
-//     if (!ok)
-//       continue;
-
-//     for (const auto &p : used)
-//     {
-//       out_map.at(p.name, idx_out) = poolLayerOnSubmap(p.name, subgeom, p.type);
+//       local_map.erase(layer);
 //     }
 //   }
 
-//   // ==========================================================
-//   // [5] 转 ROS 消息
-//   // ==========================================================
-//   grid_map::GridMapRosConverter::toMessage(out_map, message);
+//   // ==========================================
+//   // [7] 转 ROS 消息
+//   // ==========================================
+//   grid_map::GridMapRosConverter::toMessage(local_map, message);
 //   return true;
 // }
+
+bool Mapping::buildGridMapMessage(grid_map_msgs::GridMap &message)
+{
+  // ==========================================================
+  // [0] 获取最新 origin（ViewPoint 左下角），没有就不发布
+  // ==========================================================
+  if (!has_origin_.load(std::memory_order_acquire))
+  {
+    ROS_WARN_THROTTLE(2.0, "No viewpoint origin yet, skip grid map publish.");
+    return false;
+  }
+
+  Eigen::Vector3d origin;
+  ros::Time origin_stamp;
+  {
+    std::lock_guard<std::mutex> lk(origin_mutex_);
+    origin = latest_origin_;
+    origin_stamp = latest_origin_stamp_;
+  }
+
+  // ==========================================================
+  // [1] 加锁保护 height_map_（读）
+  // ==========================================================
+  std::lock_guard<std::mutex> lock(gridmap_publish_mutex_);
+
+  // ==========================================================
+  // [2] 输出地图几何：严格对齐 ViewPoint（res + origin）
+  //     grid_map 只有一个二维 resolution，所以用 viewpoint_resolution_x_
+  // ==========================================================
+  const double vp_res_x = viewpoint_resolution_x_;
+  const double vp_res_y = viewpoint_resolution_y_;
+
+  double out_res = vp_res_x;
+  if (std::fabs(vp_res_x - vp_res_y) > 1e-9)
+  {
+    ROS_WARN_THROTTLE(2.0,
+                      "ViewPoint res x!=y (%.4f vs %.4f). grid_map uses single res, using res_x.",
+                      vp_res_x, vp_res_y);
+  }
+
+  if (out_res <= 0.0 || viewpoint_number_x_ <= 0 || viewpoint_number_y_ <= 0)
+  {
+    ROS_WARN_THROTTLE(2.0, "Invalid viewpoint params: res=%.4f, nx=%d, ny=%d",
+                      out_res, viewpoint_number_x_, viewpoint_number_y_);
+    return false;
+  }
+
+  // 窗口大小（米），严格用 number * ViewPoint res
+  const double size_x = static_cast<double>(viewpoint_number_x_) * out_res;
+  const double size_y = static_cast<double>(viewpoint_number_y_) * out_res;
+
+  // 让输出 map 的 min corner = origin（左下角）
+  const grid_map::Position out_center(origin.x() + 0.5 * size_x,
+                                      origin.y() + 0.5 * size_y);
+
+  grid_map::GridMap out_map;
+  out_map.setFrameId(height_map_.getFrameId()); // 若你希望固定 "map"，也可以写 "map"
+  out_map.setTimestamp(origin_stamp.toNSec());
+  out_map.setGeometry(grid_map::Length(size_x, size_y), out_res, out_center);
+
+  // ==========================================================
+  // [3] 选择发布层 + 每层的 pooling 策略
+  //     你要求 traversability 系列由 MIN 改为 MAX
+  // ==========================================================
+  enum class PoolType
+  {
+    MIN,
+    MAX,
+    MEAN
+  };
+
+  struct LayerPolicy
+  {
+    std::string name;
+    PoolType type;
+  };
+
+  const std::vector<LayerPolicy> policies = {
+      {"elevation", PoolType::MEAN},
+      {"elevation_BGK", PoolType::MEAN},
+      {"slope", PoolType::MEAN},
+      {"roughness", PoolType::MEAN},
+      {"step", PoolType::MAX},
+      {"traversability", PoolType::MAX},
+      {"traversability_fine_wheeled", PoolType::MAX},
+      {"traversability_fine_tracked", PoolType::MAX},
+      {"critical", PoolType::MAX},
+  };
+
+  // 只添加 height_map_ 中实际存在的层
+  std::vector<LayerPolicy> used;
+  used.reserve(policies.size());
+  for (const auto &p : policies)
+  {
+    if (height_map_.exists(p.name))
+    {
+      out_map.add(p.name, std::numeric_limits<float>::quiet_NaN());
+      used.push_back(p);
+    }
+  }
+
+  if (used.empty())
+  {
+    ROS_WARN_THROTTLE(2.0, "None of publish layers exist in height_map_.");
+    return false;
+  }
+
+  // ==========================================================
+  // [4] 块聚合 pooling：每个 coarse cell 覆盖 out_res × out_res 的窗口
+  //     在高分辨率 height_map_ 上聚合得到一个值
+  // ==========================================================
+  auto isFinite = [](float v) -> bool
+  { return std::isfinite(v); };
+
+  auto poolLayerOnSubmap = [&](const std::string &layer,
+                               const grid_map::SubmapGeometry &subgeom,
+                               PoolType type) -> float
+  {
+    grid_map::SubmapIterator it(subgeom);
+
+    if (type == PoolType::MEAN)
+    {
+      double sum = 0.0;
+      int cnt = 0;
+      for (; !it.isPastEnd(); ++it)
+      {
+        const grid_map::Index idx = *it;
+        const float v = height_map_.at(layer, idx);
+        if (!isFinite(v))
+          continue;
+        sum += v;
+        cnt++;
+      }
+      return (cnt > 0) ? static_cast<float>(sum / cnt)
+                       : std::numeric_limits<float>::quiet_NaN();
+    }
+    else if (type == PoolType::MIN)
+    {
+      float best = std::numeric_limits<float>::infinity();
+      bool has = false;
+      for (; !it.isPastEnd(); ++it)
+      {
+        const grid_map::Index idx = *it;
+        const float v = height_map_.at(layer, idx);
+        if (!isFinite(v))
+          continue;
+        best = std::min(best, v);
+        has = true;
+      }
+      return has ? best : std::numeric_limits<float>::quiet_NaN();
+    }
+    else // MAX
+    {
+      float best = -std::numeric_limits<float>::infinity();
+      bool has = false;
+      for (; !it.isPastEnd(); ++it)
+      {
+        const grid_map::Index idx = *it;
+        const float v = height_map_.at(layer, idx);
+        if (!isFinite(v))
+          continue;
+        best = std::max(best, v);
+        has = true;
+      }
+      return has ? best : std::numeric_limits<float>::quiet_NaN();
+    }
+  };
+
+  const grid_map::Length cell_window(out_res, out_res);
+
+  for (grid_map::GridMapIterator it(out_map); !it.isPastEnd(); ++it)
+  {
+    const grid_map::Index idx_out(*it);
+
+    // coarse cell 中心点坐标
+    grid_map::Position cell_center;
+    out_map.getPosition(idx_out, cell_center);
+
+    // 如果高分辨率图不覆盖该区域，保持 NaN
+    if (!height_map_.isInside(cell_center))
+      continue;
+
+    bool ok = false;
+    grid_map::SubmapGeometry subgeom(height_map_, cell_center, cell_window, ok);
+    if (!ok)
+      continue;
+
+    for (const auto &p : used)
+    {
+      out_map.at(p.name, idx_out) = poolLayerOnSubmap(p.name, subgeom, p.type);
+    }
+  }
+
+  // ==========================================================
+  // [5] 转 ROS 消息
+  // ==========================================================
+  grid_map::GridMapRosConverter::toMessage(out_map, message);
+  return true;
+}
+
+bool Mapping::buildGridMapFromViewpointCloud(grid_map_msgs::GridMap &message)
+{
+  // ==========================================================
+  // [0] 拿最新缓存点云（只用 x,y）
+  // ==========================================================
+  pcl::PointCloud<pcl::PointXYZI>::Ptr cloud_copy(new pcl::PointCloud<pcl::PointXYZI>());
+  ros::Time cloud_stamp;
+  std::string cloud_frame;
+
+  {
+    if (!has_viewpoint_vis_.load(std::memory_order_acquire))
+    {
+      ROS_WARN_THROTTLE(2.0, "No viewpoint_vis_cloud yet, skip grid map publish.");
+      return false;
+    }
+
+    std::lock_guard<std::mutex> lk(viewpoint_vis_mutex_);
+    *cloud_copy = *latest_viewpoint_vis_cloud_;
+    cloud_stamp = latest_viewpoint_vis_stamp_;
+    cloud_frame = latest_viewpoint_vis_frame_id_;
+  }
+
+  if (cloud_copy->empty())
+  {
+    ROS_WARN_THROTTLE(2.0, "Latest viewpoint_vis_cloud is empty, skip grid map publish.");
+    return false;
+  }
+
+  // ==========================================================
+  // [1] 加锁保护 height_map_（读）
+  // ==========================================================
+  std::lock_guard<std::mutex> lock(gridmap_publish_mutex_);
+
+  // ==========================================================
+  // [2] 输出分辨率：仍然用 viewpoint_resolution_x_（保持不变）
+  // ==========================================================
+  const double vp_res_x = viewpoint_resolution_x_;
+  const double vp_res_y = viewpoint_resolution_y_;
+
+  double out_res = vp_res_x;
+  if (std::fabs(vp_res_x - vp_res_y) > 1e-9)
+  {
+    ROS_WARN_THROTTLE(2.0,
+                      "ViewPoint res x!=y (%.4f vs %.4f). grid_map uses single res, using res_x.",
+                      vp_res_x, vp_res_y);
+  }
+  if (out_res <= 0.0)
+  {
+    ROS_WARN_THROTTLE(2.0, "Invalid out_res=%.6f", out_res);
+    return false;
+  }
+
+  // ==========================================================
+  // [3] 用点云 (x,y) 决定输出几何 bbox（仅用于 setGeometry）
+  //     注意：后面不会填 bbox 内所有格子，只填点命中的格子
+  // ==========================================================
+  double min_x = std::numeric_limits<double>::infinity();
+  double min_y = std::numeric_limits<double>::infinity();
+  double max_x = -std::numeric_limits<double>::infinity();
+  double max_y = -std::numeric_limits<double>::infinity();
+
+  int valid_xy_cnt = 0;
+  for (const auto &p : cloud_copy->points)
+  {
+    if (!std::isfinite(p.x) || !std::isfinite(p.y))
+      continue;
+
+    min_x = std::min(min_x, static_cast<double>(p.x));
+    min_y = std::min(min_y, static_cast<double>(p.y));
+    max_x = std::max(max_x, static_cast<double>(p.x));
+    max_y = std::max(max_y, static_cast<double>(p.y));
+    valid_xy_cnt++;
+  }
+
+  if (valid_xy_cnt == 0)
+  {
+    ROS_WARN_THROTTLE(2.0, "No valid (x,y) points in viewpoint_vis_cloud, skip publish.");
+    return false;
+  }
+
+  // bbox 对齐到栅格线
+  auto align_down = [&](double v)
+  { return std::floor(v / out_res) * out_res; };
+  auto align_up = [&](double v)
+  { return std::ceil(v / out_res) * out_res; };
+
+  // 给 bbox 加一圈 margin（1格）
+  const double margin = out_res;
+
+  const double aligned_min_x = align_down(min_x - margin);
+  const double aligned_min_y = align_down(min_y - margin);
+  const double aligned_max_x = align_up(max_x + margin);
+  const double aligned_max_y = align_up(max_y + margin);
+
+  const double size_x = std::max(out_res, aligned_max_x - aligned_min_x);
+  const double size_y = std::max(out_res, aligned_max_y - aligned_min_y);
+
+  const grid_map::Position out_center(aligned_min_x + 0.5 * size_x,
+                                      aligned_min_y + 0.5 * size_y);
+
+  grid_map::GridMap out_map;
+  out_map.setFrameId(height_map_.getFrameId().empty() ? cloud_frame : height_map_.getFrameId());
+  out_map.setTimestamp(cloud_stamp.toNSec());
+  out_map.setGeometry(grid_map::Length(size_x, size_y), out_res, out_center);
+
+  // ==========================================================
+  // [4] 层与 pooling 策略（保持不变）
+  // ==========================================================
+  enum class PoolType
+  {
+    MIN,
+    MAX,
+    MEAN
+  };
+
+  struct LayerPolicy
+  {
+    std::string name;
+    PoolType type;
+  };
+
+  const std::vector<LayerPolicy> policies = {
+      {"elevation", PoolType::MEAN},
+      {"elevation_BGK", PoolType::MEAN},
+      {"slope", PoolType::MEAN},
+      {"roughness", PoolType::MEAN},
+      {"step", PoolType::MAX},
+      {"traversability", PoolType::MAX},
+      {"traversability_fine_wheeled", PoolType::MAX},
+      {"traversability_fine_tracked", PoolType::MAX},
+      {"critical", PoolType::MAX},
+  };
+
+  std::vector<LayerPolicy> used;
+  used.reserve(policies.size());
+  for (const auto &p : policies)
+  {
+    if (height_map_.exists(p.name))
+    {
+      out_map.add(p.name, std::numeric_limits<float>::quiet_NaN());
+      used.push_back(p);
+    }
+  }
+
+  if (used.empty())
+  {
+    ROS_WARN_THROTTLE(2.0, "None of publish layers exist in height_map_.");
+    return false;
+  }
+
+  // ==========================================================
+  // [5] pooling（保持不变）
+  // ==========================================================
+  auto isFinite = [](float v) -> bool
+  { return std::isfinite(v); };
+
+  auto poolLayerOnSubmap = [&](const std::string &layer,
+                               const grid_map::SubmapGeometry &subgeom,
+                               PoolType type) -> float
+  {
+    grid_map::SubmapIterator it(subgeom);
+
+    if (type == PoolType::MEAN)
+    {
+      double sum = 0.0;
+      int cnt = 0;
+      for (; !it.isPastEnd(); ++it)
+      {
+        const grid_map::Index idx = *it;
+        const float v = height_map_.at(layer, idx);
+        if (!isFinite(v))
+          continue;
+        sum += v;
+        cnt++;
+      }
+      return (cnt > 0) ? static_cast<float>(sum / cnt)
+                       : std::numeric_limits<float>::quiet_NaN();
+    }
+    else if (type == PoolType::MIN)
+    {
+      float best = std::numeric_limits<float>::infinity();
+      bool has = false;
+      for (; !it.isPastEnd(); ++it)
+      {
+        const grid_map::Index idx = *it;
+        const float v = height_map_.at(layer, idx);
+        if (!isFinite(v))
+          continue;
+        best = std::min(best, v);
+        has = true;
+      }
+      return has ? best : std::numeric_limits<float>::quiet_NaN();
+    }
+    else // MAX
+    {
+      float best = -std::numeric_limits<float>::infinity();
+      bool has = false;
+      for (; !it.isPastEnd(); ++it)
+      {
+        const grid_map::Index idx = *it;
+        const float v = height_map_.at(layer, idx);
+        if (!isFinite(v))
+          continue;
+        best = std::max(best, v);
+        has = true;
+      }
+      return has ? best : std::numeric_limits<float>::quiet_NaN();
+    }
+  };
+
+  const grid_map::Length cell_window(out_res, out_res);
+
+  // ==========================================================
+  // [6] 关键变化：只填 “点命中的 cell”
+  // ==========================================================
+  std::unordered_set<uint64_t> visited;
+  visited.reserve(static_cast<size_t>(cloud_copy->size()));
+
+  auto packIndex = [](const grid_map::Index &idx) -> uint64_t
+  {
+    return (static_cast<uint64_t>(static_cast<uint32_t>(idx.x())) << 32) |
+           (static_cast<uint64_t>(static_cast<uint32_t>(idx.y())));
+  };
+
+  int filled_cells = 0;
+
+  for (const auto &p : cloud_copy->points)
+  {
+    if (!std::isfinite(p.x) || !std::isfinite(p.y))
+      continue;
+
+    const grid_map::Position pos(static_cast<double>(p.x), static_cast<double>(p.y));
+
+    if (!out_map.isInside(pos))
+      continue;
+
+    grid_map::Index idx_out;
+    if (!out_map.getIndex(pos, idx_out))
+      continue;
+
+    const uint64_t key = packIndex(idx_out);
+    if (!visited.insert(key).second)
+      continue; // 已经填过这个 cell
+
+    // 用 cell 中心点在 height_map_ 上做 pooling（保持原逻辑）
+    grid_map::Position cell_center;
+    out_map.getPosition(idx_out, cell_center);
+
+    if (!height_map_.isInside(cell_center))
+      continue;
+
+    bool ok = false;
+    grid_map::SubmapGeometry subgeom(height_map_, cell_center, cell_window, ok);
+    if (!ok)
+      continue;
+
+    for (const auto &pol : used)
+    {
+      out_map.at(pol.name, idx_out) = poolLayerOnSubmap(pol.name, subgeom, pol.type);
+    }
+
+    filled_cells++;
+  }
+
+  ROS_INFO_STREAM_THROTTLE(1.0,
+                           "GridMap filled cells by points: " << filled_cells
+                                                              << " / unique cells=" << visited.size());
+
+  // ==========================================================
+  // [7] 转 ROS 消息
+  // ==========================================================
+  grid_map::GridMapRosConverter::toMessage(out_map, message);
+  return true;
+}
 
 // ==================== Fixed-Rate Publishing ====================
 void Mapping::publishTimerCallback(const ros::TimerEvent &event)

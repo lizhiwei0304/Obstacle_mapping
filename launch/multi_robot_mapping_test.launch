@@ -2,5 +2,6 @@
 <launch>
 
     <!-- RViz visualization -->
-    <node name="rviz" pkg="rviz" type="rviz" args="-d $(find obstacle_mapping)/rviz/show_multi_robot.rviz" output="screen" />
+    <node name="rviz" pkg="rviz" type="rviz"
+        args="-d $(find obstacle_mapping)/rviz/show_multi_robot.rviz" output="screen" />
 </launch>

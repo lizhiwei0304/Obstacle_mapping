@@ -52,6 +52,11 @@ catkin_package(
     system_lib
 )
 
+catkin_install_python(PROGRAMS
+  scripts/cloud_merger_and_accumulator.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+
 
 include_directories(
   include

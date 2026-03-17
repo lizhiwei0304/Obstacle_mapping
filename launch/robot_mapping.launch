@@ -1,0 +1,128 @@
+<?xml version="1.0"?>
+<launch>
+    <arg name="ns" default="vehicle0" />
+    <arg name="frame_id" default="map" />
+    <arg name="queue_size" default="10" />
+    <arg name="debug_mode" default="false" />
+    <arg name="max_range" default="25.0" />
+    <arg name="min_range" default="0.1" />
+    <arg name="min_z" default="-3.0" />
+    <arg name="max_z" default="1.3" />
+    <arg name="map_resolution" default="0.5" />
+    <arg name="map_length_x" default="1000.0" />
+    <arg name="map_length_y" default="1000.0" />
+    <arg name="local_map_size_x" default="20.0" />
+    <arg name="local_map_size_y" default="20.0" />
+    <arg name="bgk_kernel_size" default="0.6" />
+    <arg name="slope_threshold" default="0.3" />
+    <arg name="roughness_threshold" default="0.04" />
+    <arg name="step_threshold" default="0.4" />
+    <arg name="init_trav_threshold" default="0.5" />
+    <arg name="normal_estimation_radius" default="0.8" />
+    <arg name="step_radius" default="0.6" />
+    <arg name="min_normal_points" default="6" />
+    <arg name="thread_count" default="4" />
+    <arg name="wheeled_model_path"
+        default="$(find obstacle_mapping)/test_map/vehicles/wheeled_car.csv" />
+    <arg name="tracked_model_path"
+        default="$(find obstacle_mapping)/test_map/vehicles/tracked_car.csv" />
+    <arg name="robot_rows" default="9" />
+    <arg name="robot_cols" default="11" />
+    <arg name="robot_model_resolution" default="0.2" />
+    <arg name="touch_gap_threshold" default="0.05" />
+    <arg name="collision_gap_threshold" default="0.1" />
+    <arg name="max_iterations" default="50" />
+
+    <arg name="enable_fine_traversability" default="true" />
+    <arg name="enable_incremental_geom" default="true" />
+    <arg name="enable_incremental_step" default="true" />
+    <arg name="enable_incremental_trav" default="true" />
+
+    <arg name="fine_trav_min" default="0.4" />
+    <arg name="fine_trav_max" default="0.9" />
+    <arg name="fine_slope_min" default="0.3" />
+    <arg name="fine_slope_max" default="0.95" />
+    <arg name="fine_roughness_min" default="0.2" />
+    <arg name="fine_roughness_max" default="1.0" />
+    <arg name="fine_roll_threshold_deg" default="30.0" />
+    <arg name="fine_pitch_threshold_deg" default="30.0" />
+
+    <arg name="skip_old_messages" default="false" />
+
+
+    <node name="multi_robot_mapping_node" pkg="obstacle_mapping" type="multi_robot_mapping_node"
+        output="screen">
+        <!-- Topic and frame settings -->
+        <param name="scan_topic" value="/$(arg ns)/registered_scan_accum_10" />
+        <param name="frame_id" value="$(arg frame_id)" />
+        <param name="queue_size" value="$(arg queue_size)" />
+
+        <!-- Vehicle and debug settings -->
+        <param name="debug_mode" value="$(arg debug_mode)" />
+
+        <!-- Sensor range parameters -->
+        <param name="max_range" value="$(arg max_range)" />
+        <param name="min_range" value="$(arg min_range)" />
+
+        <!-- Point cloud Z range parameters -->
+        <param name="min_z" value="$(arg min_z)" />
+        <param name="max_z" value="$(arg max_z)" />
+
+        <!-- Map parameters -->
+        <param name="map_resolution" value="$(arg map_resolution)" />
+        <param name="map_length_x" value="$(arg map_length_x)" />
+        <param name="map_length_y" value="$(arg map_length_y)" />
+
+        <!-- Local map visualization size -->
+        <param name="local_map_size_x" value="$(arg local_map_size_x)" />
+        <param name="local_map_size_y" value="$(arg local_map_size_y)" />
+
+        <!-- BGK inference kernel size -->
+        <param name="bgk_kernel_size" value="$(arg bgk_kernel_size)" />
+
+        <!-- Traversability thresholds -->
+        <param name="slope_threshold" value="$(arg slope_threshold)" />
+        <param name="roughness_threshold" value="$(arg roughness_threshold)" />
+        <param name="step_threshold" value="$(arg step_threshold)" />
+        <param name="init_trav_threshold" value="$(arg init_trav_threshold)" />
+
+        <!-- Feature mapping parameters -->
+        <param name="normal_estimation_radius" value="$(arg normal_estimation_radius)" />
+        <param name="step_radius" value="$(arg step_radius)" />
+        <param name="min_normal_points" value="$(arg min_normal_points)" />
+        <param name="thread_count" value="$(arg thread_count)" />
+
+        <!-- Vehicle model parameters for fine-grained traversability -->
+        <param name="wheeled_model_path" value="$(arg wheeled_model_path)" />
+        <param name="tracked_model_path" value="$(arg tracked_model_path)" />
+        <param name="robot_rows" value="$(arg robot_rows)" />
+        <param name="robot_cols" value="$(arg robot_cols)" />
+        <param name="robot_model_resolution" value="$(arg robot_model_resolution)" />
+        <param name="touch_gap_threshold" value="$(arg touch_gap_threshold)" />
+        <param name="collision_gap_threshold" value="$(arg collision_gap_threshold)" />
+        <param name="max_iterations" value="$(arg max_iterations)" />
+
+        <!-- Fine-grained traversability computation control -->
+        <param name="enable_fine_traversability" value="$(arg enable_fine_traversability)" />
+        <param name="enable_incremental_geom" value="$(arg enable_incremental_geom)" />
+        <param name="enable_incremental_step" value="$(arg enable_incremental_step)" />
+        <param name="enable_incremental_trav" value="$(arg enable_incremental_trav)" />
+
+        <!-- Fine-grained traversability range parameters -->
+        <param name="fine_trav_min" value="$(arg fine_trav_min)" />
+        <param name="fine_trav_max" value="$(arg fine_trav_max)" />
+        <param name="fine_slope_min" value="$(arg fine_slope_min)" />
+        <param name="fine_slope_max" value="$(arg fine_slope_max)" />
+        <param name="fine_roughness_min" value="$(arg fine_roughness_min)" />
+        <param name="fine_roughness_max" value="$(arg fine_roughness_max)" />
+        <param name="fine_roll_threshold_deg" value="$(arg fine_roll_threshold_deg)" />
+        <param name="fine_pitch_threshold_deg" value="$(arg fine_pitch_threshold_deg)" />
+
+        <!-- Asynchronous processing parameters -->
+        <param name="skip_old_messages" value="$(arg skip_old_messages)" />
+    </node>
+
+    <!-- RViz visualization -->
+    <node name="rviz" pkg="rviz" type="rviz"
+        args="-d $(find obstacle_mapping)/rviz/show_multi_robot_$(arg ns).rviz" output="screen" />
+</launch>

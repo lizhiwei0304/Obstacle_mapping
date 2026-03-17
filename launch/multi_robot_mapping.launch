@@ -1,10 +1,18 @@
 <?xml version="1.0"?>
 <launch>
     <!-- Multi-robot mapping node -->
+    <arg name="id0" default="0" />
+    <arg name="id1" default="1" />
+    <arg name="id2" default="2" />
+    <arg name="namespace_1" default="vehicle$(arg id0)" />
+    <arg name="namespace_2" default="vehicle$(arg id1)" />
+    <arg name="namespace_3" default="vehicle$(arg id2)" />
+
+
     <node name="multi_robot_mapping_node" pkg="obstacle_mapping" type="multi_robot_mapping_node"
         output="screen">
         <!-- Topic and frame settings -->
-        <param name="scan_topic" value="/vehicle0/registered_scan" />
+        <param name="scan_topic" value="/vehicle0/registered_scan_accum_10" />
         <param name="frame_id" value="map" />
         <param name="queue_size" value="10" />
 
@@ -12,7 +20,7 @@
         <param name="debug_mode" value="false" />
 
         <!-- Sensor range parameters (also used as observation range for point cloud filtering) -->
-        <param name="max_range" value="80.0" />
+        <param name="max_range" value="25.0" />
         <param name="min_range" value="0.1" />
 
         <!-- Point cloud Z range parameters -->

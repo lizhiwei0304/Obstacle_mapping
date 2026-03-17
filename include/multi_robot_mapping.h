@@ -14,6 +14,10 @@
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl_conversions/pcl_conversions.h>
+
+#include <pcl/filters/voxel_grid.h>
+#include <pcl/filters/filter.h> // removeNaNFromPointCloud
+
 #include <grid_map_core/grid_map_core.hpp>
 #include <grid_map_ros/grid_map_ros.hpp>
 #include <Eigen/Dense>
@@ -28,6 +32,9 @@
 #include <thread>
 #include <queue>
 #include <condition_variable>
+#include <unordered_set>
+#include <atomic>
+
 
 class Mapping
 {
@@ -78,10 +85,24 @@ private:
     ros::Publisher gridmap_pub_;
     ros::Timer publish_timer_; // 用于固定频率发布的定时器
 
-    // 使用 message_filters 进行时间同步
-    typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::PointCloud2, nav_msgs::Odometry> SyncPolicy;
+    // // 使用 message_filters 进行时间同步
+    // typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::PointCloud2, nav_msgs::Odometry> SyncPolicy;
+    // std::shared_ptr<message_filters::Subscriber<sensor_msgs::PointCloud2>> cloud_filter_sub_;
+    // std::shared_ptr<message_filters::Subscriber<nav_msgs::Odometry>> odom_filter_sub_;
+    // std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;
+
+    // 4路 ApproximateTime policy（顺序必须和 callback 参数一致）
+    using SyncPolicy = message_filters::sync_policies::ApproximateTime<
+        sensor_msgs::PointCloud2, nav_msgs::Odometry,
+        sensor_msgs::PointCloud2, sensor_msgs::PointCloud2>;
+
     std::shared_ptr<message_filters::Subscriber<sensor_msgs::PointCloud2>> cloud_filter_sub_;
     std::shared_ptr<message_filters::Subscriber<nav_msgs::Odometry>> odom_filter_sub_;
+
+    // // 新增两个点云订阅
+    std::shared_ptr<message_filters::Subscriber<sensor_msgs::PointCloud2>> terrain_filter_sub_;
+    std::shared_ptr<message_filters::Subscriber<sensor_msgs::PointCloud2>> terrain_ext_filter_sub_;
+
     std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;
 
     // 发布线程控制
@@ -204,8 +225,21 @@ private:
     double viewpoint_grid_size_y_ = 0.0;
     double viewpoint_grid_size_z_ = 0.0;
 
-    ros::Subscriber origin_sub_;
 
+    // =========================
+    // viewpoint vis cloud cache (latest frame)
+    // =========================
+    ros::Subscriber viewpoint_vis_cloud_sub_;
+    std::string viewpoint_vis_topic_;
+
+    mutable std::mutex viewpoint_vis_mutex_;
+    pcl::PointCloud<pcl::PointXYZI>::Ptr latest_viewpoint_vis_cloud_{new pcl::PointCloud<pcl::PointXYZI>()};
+    ros::Time latest_viewpoint_vis_stamp_;
+    std::string latest_viewpoint_vis_frame_id_;
+    std::atomic<bool> has_viewpoint_vis_{false};
+
+
+    ros::Subscriber origin_sub_;
     mutable std::mutex origin_mutex_;
     Eigen::Vector3d latest_origin_ = Eigen::Vector3d::Zero();
     ros::Time latest_origin_stamp_;
@@ -213,15 +247,24 @@ private:
 
     std::string origin_topic_; // 可从参数读取
 
-    
     // ...
     void originCallback(const geometry_msgs::PointStampedConstPtr &msg);
+
+    // =========================
+    // viewpoint vis cloud callback
+    // =========================
+    void viewpointVisCloudCallback(const sensor_msgs::PointCloud2ConstPtr &msg);
 
     /**
      * @brief 同步点云与里程计订阅的回调函数
      */
-    void synchronizedCloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr &cloud_msg,
-                                       const nav_msgs::OdometryConstPtr &odom_msg);
+    // void synchronizedCloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr &cloud_msg,
+    //                                    const nav_msgs::OdometryConstPtr &odom_msg);
+    void synchronizedCloudOdomCallback(
+        const sensor_msgs::PointCloud2ConstPtr &scan_msg,
+        const nav_msgs::OdometryConstPtr &odom_msg,
+        const sensor_msgs::PointCloud2ConstPtr &terrain_msg,
+        const sensor_msgs::PointCloud2ConstPtr &terrain_ext_msg);
 
     /**
      * @brief 处理线程函数：异步处理队列中的点云
@@ -339,6 +382,8 @@ private:
      * @brief 构建局部栅格地图消息
      */
     bool buildGridMapMessage(grid_map_msgs::GridMap &message);
+
+    bool buildGridMapFromViewpointCloud(grid_map_msgs::GridMap &message);
 
     /**
      * @brief 固定频率发布栅格地图的定时器回调
