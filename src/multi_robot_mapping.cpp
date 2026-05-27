@@ -581,10 +581,10 @@ void Mapping::processSynchronizedMessages(const sensor_msgs::PointCloud2ConstPtr
   // ===========================
   // 注意：cloud_msg->width * cloud_msg->height 是 PointCloud2 的点数估计（organized cloud 时更典型）。
   // 对于非 organized cloud，height 常为 1，width = 点数。
-  ROS_INFO("Received synchronized point cloud (%d points) at time: %ld.%09ld",
-           cloud_msg->width * cloud_msg->height,
-           cloud_msg->header.stamp.sec,
-           cloud_msg->header.stamp.nsec);
+  ROS_INFO("Received synchronized point cloud (%u points) at time: %u.%09u",
+           static_cast<unsigned int>(cloud_msg->width * cloud_msg->height),
+           static_cast<unsigned int>(cloud_msg->header.stamp.sec),
+           static_cast<unsigned int>(cloud_msg->header.stamp.nsec));
 
   // debug_mode_ 开启时输出更详细的 frame 信息
   // frame_id 用于确认点云在哪个坐标系、里程计在哪个坐标系

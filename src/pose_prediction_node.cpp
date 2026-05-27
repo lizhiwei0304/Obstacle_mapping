@@ -877,7 +877,7 @@ void pose_prediction::showPoseInfo()
     touch_points_marker_C.scale.y = 0.2;
     touch_points_marker_C.scale.z = 0.2;
     touch_points_marker_C.ns = "touch_points_Con";
-    ROS_INFO("contact_touch_points size: %d", touch_points_.size());
+    ROS_INFO("contact_touch_points size: %zu", touch_points_.size());
     for (size_t i = 0; i < touch_points_.size(); ++i)
     {
         geometry_msgs::Point p;

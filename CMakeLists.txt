@@ -48,8 +48,6 @@ catkin_package(
     sensor_msgs 
     std_msgs
     rosbag
-  DEPENDS 
-    system_lib
 )
 
 catkin_install_python(PROGRAMS

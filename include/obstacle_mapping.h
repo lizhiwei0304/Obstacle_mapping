@@ -6,8 +6,8 @@
  **/
 #include <iostream>
 #include <deque>
-#include <tbb/task_scheduler_init.h>
-#include <tbb/tbb.h>
+#include <tbb/global_control.h>
+#include <tbb/parallel_for.h>
 // #include <cuda_runtime.h>
 
 #include <ros/ros.h>

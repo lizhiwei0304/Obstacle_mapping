@@ -600,10 +600,10 @@ void obstacle_mapping::FeatureMapping(grid_map::GridMap &map)
   grid_map::Size gridMapSize = map.getSize();
   int robot_range = center_robot_index_(0) * gridMapSize(1) + center_robot_index_(1);
   // Set number of thread to use for parallel programming.
-  std::unique_ptr<tbb::task_scheduler_init> TBBInitPtr;
-  if (threadCount_ != -1)
+  std::unique_ptr<tbb::global_control> TBBLimitPtr;
+  if (threadCount_ > 0)
   {
-    TBBInitPtr.reset(new tbb::task_scheduler_init(threadCount_));
+    TBBLimitPtr.reset(new tbb::global_control(tbb::global_control::max_allowed_parallelism, threadCount_));
   }
   // Parallelized iteration through the map.
   tbb::parallel_for(0, gridMapSize(0) * gridMapSize(1), [&](int range)
@@ -1216,7 +1216,6 @@ void obstacle_mapping::pointcloudinterpolation(pcl::PointCloud<pcl::PointXYZ>::P
 
   mls.setComputeNormals(true);
   mls.setInputCloud(inputcloudPtr);
-  mls.setPolynomialFit(true);
   mls.setSearchMethod(tree);
   mls.setSearchRadius(search_radius);
   mls.setUpsamplingMethod(pcl::MovingLeastSquares<pcl::PointXYZ, pcl::PointXYZ>::RANDOM_UNIFORM_DENSITY);
