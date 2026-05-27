@@ -24,12 +24,13 @@
 int main(int argc, char **argv)
 {
   ros::init(argc, argv, "multi_robot_mapping_node");
-  ros::NodeHandle nh("~");
+  ros::NodeHandle pnh("~");
+  ros::NodeHandle nh;
 
   ROS_INFO("Starting multi_robot_mapping_node...");
 
   // Create mapping object
-  Mapping mapping(nh);
+  Mapping mapping(nh, pnh);
 
   // // Initialize the mapping node
   // mapping.init();
@@ -43,10 +44,11 @@ int main(int argc, char **argv)
 #endif
 
 // ==================== Mapping Class Implementation ==================== //
-Mapping::Mapping(ros::NodeHandle &nh)
+Mapping::Mapping(ros::NodeHandle &nh, ros::NodeHandle &pnh)
     : nh_(nh),
+      pnh_(pnh),
       current_cloud_(new pcl::PointCloud<pcl::PointXYZ>()),
-      scan_topic_("/vehicle0/registered_scan"),
+      scan_topic_("registered_scan"),
       frame_id_("map"),
       queue_size_(10),
       debug_mode_(false),
@@ -138,14 +140,14 @@ Mapping::Mapping(ros::NodeHandle &nh)
       nh_, scan_topic_, queue_size_);
 
   odom_filter_sub_ = std::make_shared<message_filters::Subscriber<nav_msgs::Odometry>>(
-      nh_, "/vehicle0/state_estimation", queue_size_);
+      nh_, "state_estimation", queue_size_);
 
   // 新增两路点云
   terrain_filter_sub_ = std::make_shared<message_filters::Subscriber<sensor_msgs::PointCloud2>>(
-      nh_, "/vehicle0/terrain_map", queue_size_);
+      nh_, "terrain_map", queue_size_);
 
   terrain_ext_filter_sub_ = std::make_shared<message_filters::Subscriber<sensor_msgs::PointCloud2>>(
-      nh_, "/vehicle0/terrain_map_ext", queue_size_);
+      nh_, "terrain_map_ext", queue_size_);
 
   // 4路同步器
   sync_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(
@@ -162,8 +164,8 @@ Mapping::Mapping(ros::NodeHandle &nh)
   gridmap_pub_ = nh_.advertise<grid_map_msgs::GridMap>("trav_map", 10);
 
   ROS_INFO("Successfully subscribed to: %s (synchronized)", scan_topic_.c_str());
-  ROS_INFO("Successfully subscribed to: /vehicle0/state_estimation (synchronized)");
-  ROS_INFO("Publishing grid map on topic: /trav_map");
+  ROS_INFO("Successfully subscribed to: state_estimation (synchronized)");
+  ROS_INFO("Publishing grid map on topic: trav_map");
 
   // Start processing thread for asynchronous point cloud processing
   should_exit_ = false;
@@ -203,79 +205,79 @@ void Mapping::loadParameters()
   ROS_INFO("Loading ROS parameters...");
 
   // Load topic settings
-  nh_.param<std::string>("scan_topic", scan_topic_, "/vehicle0/registered_scan");
-  nh_.param<std::string>("origin_topic", origin_topic_, "/vehicle0/tare_planner_node/viewpoint_origin");
-  nh_.param<std::string>("viewpoint_vis_topic", viewpoint_vis_topic_, "/vehicle0/viewpoint_vis_cloud");
-  nh_.param<std::string>("frame_id", frame_id_, "map");
-  nh_.param<int>("queue_size", queue_size_, 200);
+  pnh_.param<std::string>("scan_topic", scan_topic_, "registered_scan");
+  pnh_.param<std::string>("origin_topic", origin_topic_, "tare_planner_node/viewpoint_origin");
+  pnh_.param<std::string>("viewpoint_vis_topic", viewpoint_vis_topic_, "viewpoint_vis_cloud");
+  pnh_.param<std::string>("frame_id", frame_id_, "map");
+  pnh_.param<int>("queue_size", queue_size_, 200);
 
   // Load vehicle and debug settings
-  nh_.param<bool>("debug_mode", debug_mode_, false);
+  pnh_.param<bool>("debug_mode", debug_mode_, false);
 
   const std::string package_path = ros::package::getPath("obstacle_mapping");
   const std::string vehicles_dir = package_path + "/test_map/vehicles";
   const std::string default_wheeled_model_path = vehicles_dir + "/wheeled_car.csv";
   const std::string default_tracked_model_path = vehicles_dir + "/tracked_car.csv";
 
-  nh_.param<std::string>("wheeled_model_path", wheeled_model_path_, default_wheeled_model_path);
-  nh_.param<std::string>("tracked_model_path", tracked_model_path_, default_tracked_model_path);
+  pnh_.param<std::string>("wheeled_model_path", wheeled_model_path_, default_wheeled_model_path);
+  pnh_.param<std::string>("tracked_model_path", tracked_model_path_, default_tracked_model_path);
 
   // Load sensor range parameters
-  nh_.param<double>("max_range", max_range_, 100.0);
-  nh_.param<double>("min_range", min_range_, 0.1);
+  pnh_.param<double>("max_range", max_range_, 100.0);
+  pnh_.param<double>("min_range", min_range_, 0.1);
 
   // Load point cloud Z range parameters
-  nh_.param<double>("min_z", min_z_, -1.0);
-  nh_.param<double>("max_z", max_z_, 0.1);
+  pnh_.param<double>("min_z", min_z_, -1.0);
+  pnh_.param<double>("max_z", max_z_, 0.1);
 
   // Load map parameters
-  nh_.param<double>("map_resolution", map_resolution_, 0.2);
-  nh_.param<double>("map_length_x", map_length_x_, 1000.0);
-  nh_.param<double>("map_length_y", map_length_y_, 1000.0);
-  nh_.param<double>("local_map_size_x", local_map_size_x_, 40.0);
-  nh_.param<double>("local_map_size_y", local_map_size_y_, 40.0);
+  pnh_.param<double>("map_resolution", map_resolution_, 0.2);
+  pnh_.param<double>("map_length_x", map_length_x_, 1000.0);
+  pnh_.param<double>("map_length_y", map_length_y_, 1000.0);
+  pnh_.param<double>("local_map_size_x", local_map_size_x_, 40.0);
+  pnh_.param<double>("local_map_size_y", local_map_size_y_, 40.0);
 
   // Load BGK inference kernel size
-  nh_.param<double>("bgk_kernel_size", bgk_kernel_size_, 0.8);
+  pnh_.param<double>("bgk_kernel_size", bgk_kernel_size_, 0.8);
 
   // Load traversability thresholds
-  nh_.param<double>("slope_threshold", slope_threshold_, 0.3);
-  nh_.param<double>("roughness_threshold", roughness_threshold_, 0.1);
-  nh_.param<double>("step_threshold", step_threshold_, 0.2);
-  nh_.param<double>("init_trav_threshold", init_trav_threshold_, 0.5);
+  pnh_.param<double>("slope_threshold", slope_threshold_, 0.3);
+  pnh_.param<double>("roughness_threshold", roughness_threshold_, 0.1);
+  pnh_.param<double>("step_threshold", step_threshold_, 0.2);
+  pnh_.param<double>("init_trav_threshold", init_trav_threshold_, 0.5);
 
   // Load feature mapping parameters
-  nh_.param<double>("normal_estimation_radius", normal_estimation_radius_, 0.5);
-  nh_.param<double>("step_radius", step_radius_, 0.3);
-  nh_.param<int>("min_normal_points", min_normal_points_, 6);
-  nh_.param<int>("thread_count", thread_count_, 4);
+  pnh_.param<double>("normal_estimation_radius", normal_estimation_radius_, 0.5);
+  pnh_.param<double>("step_radius", step_radius_, 0.3);
+  pnh_.param<int>("min_normal_points", min_normal_points_, 6);
+  pnh_.param<int>("thread_count", thread_count_, 4);
 
   // Load vehicle model parameters
-  nh_.param<int>("robot_rows", robot_rows_, 9);
-  nh_.param<int>("robot_cols", robot_cols_, 11);
-  nh_.param<double>("robot_model_resolution", robot_model_resolution_, 0.2);
-  nh_.param<double>("touch_gap_threshold", touch_gap_threshold_, 0.05);
-  nh_.param<double>("collision_gap_threshold", collision_gap_threshold_, 0.1);
-  nh_.param<int>("max_iterations", max_iterations_, 50);
-  nh_.param<bool>("enable_fine_traversability", enable_fine_traversability_, false);
+  pnh_.param<int>("robot_rows", robot_rows_, 9);
+  pnh_.param<int>("robot_cols", robot_cols_, 11);
+  pnh_.param<double>("robot_model_resolution", robot_model_resolution_, 0.2);
+  pnh_.param<double>("touch_gap_threshold", touch_gap_threshold_, 0.05);
+  pnh_.param<double>("collision_gap_threshold", collision_gap_threshold_, 0.1);
+  pnh_.param<int>("max_iterations", max_iterations_, 50);
+  pnh_.param<bool>("enable_fine_traversability", enable_fine_traversability_, false);
 
   // Load fine-grained traversability range parameters
-  nh_.param<double>("fine_trav_min", fine_trav_min_, 0.4);
-  nh_.param<double>("fine_trav_max", fine_trav_max_, 0.9);
-  nh_.param<double>("fine_slope_min", fine_slope_min_, 0.2);
-  nh_.param<double>("fine_slope_max", fine_slope_max_, 0.8);
-  nh_.param<double>("fine_roughness_min", fine_roughness_min_, 0.5);
-  nh_.param<double>("fine_roughness_max", fine_roughness_max_, 1.0);
-  nh_.param<double>("fine_roll_threshold_deg", fine_roll_threshold_deg_, 30.0);
-  nh_.param<double>("fine_pitch_threshold_deg", fine_pitch_threshold_deg_, 30.0);
+  pnh_.param<double>("fine_trav_min", fine_trav_min_, 0.4);
+  pnh_.param<double>("fine_trav_max", fine_trav_max_, 0.9);
+  pnh_.param<double>("fine_slope_min", fine_slope_min_, 0.2);
+  pnh_.param<double>("fine_slope_max", fine_slope_max_, 0.8);
+  pnh_.param<double>("fine_roughness_min", fine_roughness_min_, 0.5);
+  pnh_.param<double>("fine_roughness_max", fine_roughness_max_, 1.0);
+  pnh_.param<double>("fine_roll_threshold_deg", fine_roll_threshold_deg_, 30.0);
+  pnh_.param<double>("fine_pitch_threshold_deg", fine_pitch_threshold_deg_, 30.0);
 
   // Load incremental mapping parameters (default to enabled)
-  nh_.param<bool>("enable_incremental_geom", enable_incremental_geom_, true);
-  nh_.param<bool>("enable_incremental_step", enable_incremental_step_, true);
-  nh_.param<bool>("enable_incremental_trav", enable_incremental_trav_, true);
+  pnh_.param<bool>("enable_incremental_geom", enable_incremental_geom_, true);
+  pnh_.param<bool>("enable_incremental_step", enable_incremental_step_, true);
+  pnh_.param<bool>("enable_incremental_trav", enable_incremental_trav_, true);
 
   // Load asynchronous processing parameters
-  nh_.param<bool>("skip_old_messages", skip_old_messages_, false);
+  pnh_.param<bool>("skip_old_messages", skip_old_messages_, false);
 
   // Load local grid map parameters
   int nx, ny, nz;
@@ -284,13 +286,23 @@ void Mapping::loadParameters()
   ros::Rate rate(10); // 10 Hz
   while (ros::ok())
   {
+    std::string ns = ros::this_node::getNamespace();
+    const std::string vp_prefix = ns + "/tare_planner_node/viewpoint_manager/";
+
+    // const bool ok =
+    //     pnh_.getParam("/vehicle0/tare_planner_node/viewpoint_manager/number_x", nx) &&
+    //     pnh_.getParam("/vehicle0/tare_planner_node/viewpoint_manager/number_y", ny) &&
+    //     pnh_.getParam("/vehicle0/tare_planner_node/viewpoint_manager/number_z", nz) &&
+    //     pnh_.getParam("/vehicle0/tare_planner_node/viewpoint_manager/resolution_x", rx) &&
+    //     pnh_.getParam("/vehicle0/tare_planner_node/viewpoint_manager/resolution_y", ry) &&
+    //     pnh_.getParam("/vehicle0/tare_planner_node/viewpoint_manager/resolution_z", rz);
     const bool ok =
-        nh_.getParam("/vehicle0/tare_planner_node/viewpoint_manager/number_x", nx) &&
-        nh_.getParam("/vehicle0/tare_planner_node/viewpoint_manager/number_y", ny) &&
-        nh_.getParam("/vehicle0/tare_planner_node/viewpoint_manager/number_z", nz) &&
-        nh_.getParam("/vehicle0/tare_planner_node/viewpoint_manager/resolution_x", rx) &&
-        nh_.getParam("/vehicle0/tare_planner_node/viewpoint_manager/resolution_y", ry) &&
-        nh_.getParam("/vehicle0/tare_planner_node/viewpoint_manager/resolution_z", rz);
+        nh_.getParam(vp_prefix + "number_x", nx) &&
+        nh_.getParam(vp_prefix + "number_y", ny) &&
+        nh_.getParam(vp_prefix + "number_z", nz) &&
+        nh_.getParam(vp_prefix + "resolution_x", rx) &&
+        nh_.getParam(vp_prefix + "resolution_y", ry) &&
+        nh_.getParam(vp_prefix + "resolution_z", rz);
 
     if (ok)
       break;
@@ -524,7 +536,7 @@ void Mapping::synchronizedCloudOdomCallback(
   // -------- 3) 合并三路点云 --------
   terrain->clear();
   terrain_ext->clear();
-  
+
   pcl::PointCloud<PointT>::Ptr merged(new pcl::PointCloud<PointT>());
   merged->reserve(cloud->size() + terrain->size() + terrain_ext->size());
 

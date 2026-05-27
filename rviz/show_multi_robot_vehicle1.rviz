@@ -6,9 +6,10 @@ Panels:
       Expanded:
         - /Status1
         - /RegisteredScan1/Autocompute Value Bounds1
+        - /GridMap1
         - /LocalHorizon1
       Splitter Ratio: 0.5
-    Tree Height: 591
+    Tree Height: 305
   - Class: rviz/Selection
     Name: Selection
   - Class: rviz/Tool Properties
@@ -188,13 +189,13 @@ Visualization Manager:
       Min Intensity: 0
       Name: GridMap
       Show Grid Lines: true
-      Topic: /trav_map
+      Topic: /vehicle1/trav_map
       Unreliable: false
       Use Rainbow: false
       Value: true
     - Class: rviz/Marker
       Enabled: true
-      Marker Topic: /vehicle0/tare_visualizer/local_planning_horizon
+      Marker Topic: /vehicle1/tare_visualizer/local_planning_horizon
       Name: LocalHorizon
       Namespaces:
         {}
@@ -228,7 +229,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 146.53445434570312
+      Distance: 61.815185546875
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -236,17 +237,17 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: 0
-        Y: 0
-        Z: 0
+        X: 3.806250810623169
+        Y: 7.381950855255127
+        Z: 9.566347122192383
       Focal Shape Fixed Size: false
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.7853981852531433
+      Pitch: 1.245397925376892
       Target Frame: vehicle0/vehicle
-      Yaw: 0.7853981852531433
+      Yaw: 1.7203978300094604
     Saved: ~
 Window Geometry:
   Displays:
@@ -264,5 +265,5 @@ Window Geometry:
   Views:
     collapsed: true
   Width: 1280
-  X: 1280
+  X: 0
   Y: 44

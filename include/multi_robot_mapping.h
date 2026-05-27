@@ -43,7 +43,7 @@ public:
      * @brief 构造函数
      * @param nh: ROS 节点句柄
      */
-    Mapping(ros::NodeHandle &nh);
+    Mapping(ros::NodeHandle &nh, ros::NodeHandle &pnh);
 
     /**
      * @brief 析构函数
@@ -79,6 +79,7 @@ public:
 private:
     // ROS 句柄
     ros::NodeHandle nh_;
+    ros::NodeHandle pnh_;
     ros::Subscriber registered_scan_sub_;
     ros::Subscriber odometry_sub_;
     ros::Publisher cloud_pub_;

@@ -44,7 +44,8 @@ namespace
 int main(int argc, char **argv)
 {
   ros::init(argc, argv, "multi_robot_mapping_offline_node");
-  ros::NodeHandle nh("~");
+  ros::NodeHandle pnh("~");
+  ros::NodeHandle nh;
 
   std::string input_bag_path;
   std::string output_bag_path;
@@ -75,7 +76,7 @@ int main(int argc, char **argv)
 
   nh.setParam("skip_old_messages", false);
 
-  Mapping mapping(nh);
+  Mapping mapping(nh, pnh);
 
   rosbag::Bag input_bag;
   try
