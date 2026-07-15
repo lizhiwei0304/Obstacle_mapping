@@ -87,24 +87,24 @@ private:
     ros::Timer publish_timer_; // 用于固定频率发布的定时器
 
     // // 使用 message_filters 进行时间同步
-    // typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::PointCloud2, nav_msgs::Odometry> SyncPolicy;
-    // std::shared_ptr<message_filters::Subscriber<sensor_msgs::PointCloud2>> cloud_filter_sub_;
-    // std::shared_ptr<message_filters::Subscriber<nav_msgs::Odometry>> odom_filter_sub_;
-    // std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;
-
-    // 4路 ApproximateTime policy（顺序必须和 callback 参数一致）
-    using SyncPolicy = message_filters::sync_policies::ApproximateTime<
-        sensor_msgs::PointCloud2, nav_msgs::Odometry,
-        sensor_msgs::PointCloud2, sensor_msgs::PointCloud2>;
-
+    typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::PointCloud2, nav_msgs::Odometry> SyncPolicy;
     std::shared_ptr<message_filters::Subscriber<sensor_msgs::PointCloud2>> cloud_filter_sub_;
     std::shared_ptr<message_filters::Subscriber<nav_msgs::Odometry>> odom_filter_sub_;
-
-    // // 新增两个点云订阅
-    std::shared_ptr<message_filters::Subscriber<sensor_msgs::PointCloud2>> terrain_filter_sub_;
-    std::shared_ptr<message_filters::Subscriber<sensor_msgs::PointCloud2>> terrain_ext_filter_sub_;
-
     std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;
+
+    // // 4路 ApproximateTime policy（顺序必须和 callback 参数一致）
+    // using SyncPolicy = message_filters::sync_policies::ApproximateTime<
+    //     sensor_msgs::PointCloud2, nav_msgs::Odometry,
+    //     sensor_msgs::PointCloud2, sensor_msgs::PointCloud2>;
+
+    // std::shared_ptr<message_filters::Subscriber<sensor_msgs::PointCloud2>> cloud_filter_sub_;
+    // std::shared_ptr<message_filters::Subscriber<nav_msgs::Odometry>> odom_filter_sub_;
+
+    // // // 新增两个点云订阅
+    // std::shared_ptr<message_filters::Subscriber<sensor_msgs::PointCloud2>> terrain_filter_sub_;
+    // std::shared_ptr<message_filters::Subscriber<sensor_msgs::PointCloud2>> terrain_ext_filter_sub_;
+
+    // std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;
 
     // 发布线程控制
     std::thread publish_thread_;
@@ -259,13 +259,13 @@ private:
     /**
      * @brief 同步点云与里程计订阅的回调函数
      */
-    // void synchronizedCloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr &cloud_msg,
-    //                                    const nav_msgs::OdometryConstPtr &odom_msg);
-    void synchronizedCloudOdomCallback(
-        const sensor_msgs::PointCloud2ConstPtr &scan_msg,
-        const nav_msgs::OdometryConstPtr &odom_msg,
-        const sensor_msgs::PointCloud2ConstPtr &terrain_msg,
-        const sensor_msgs::PointCloud2ConstPtr &terrain_ext_msg);
+    void synchronizedCloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr &cloud_msg,
+                                       const nav_msgs::OdometryConstPtr &odom_msg);
+    // void synchronizedCloudOdomCallback(
+    //     const sensor_msgs::PointCloud2ConstPtr &scan_msg,
+    //     const nav_msgs::OdometryConstPtr &odom_msg,
+    //     const sensor_msgs::PointCloud2ConstPtr &terrain_msg,
+    //     const sensor_msgs::PointCloud2ConstPtr &terrain_ext_msg);
 
     /**
      * @brief 处理线程函数：异步处理队列中的点云

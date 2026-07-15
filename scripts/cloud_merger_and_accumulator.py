@@ -11,11 +11,6 @@ from std_msgs.msg import Bool
 import sensor_msgs.point_cloud2 as pc2
 import message_filters
 
-
-# ========== 写死的启动话题 ==========
-# START_TOPIC = "start_exploration"   # std_msgs/Bool, data=True 才启动主体
-START_TOPIC = "/start_exploration"  # std_msgs/Bool, data=True 才启动主体
-
 # ------------------------- Helpers: fields -------------------------
 
 
@@ -130,16 +125,9 @@ def merge_clouds(msg_a, msg_b, out_frame_id=None):
 
 class CloudMergerAndAccumulator:
     def __init__(self):
-        # 只订阅 start，主体不初始化
         self.started = False
         self.processing_inited = False
-
-        self.start_sub = rospy.Subscriber(
-            START_TOPIC, Bool, self.cb_start, queue_size=5
-        )
-        rospy.logwarn(
-            f"[CloudMergerAndAccumulator] Waiting for '{START_TOPIC}' (std_msgs/Bool). data=True to start."
-        )
+        self.start_sub = None
 
         # 这些等启动后再 init
         self.pub_terrain_merged = None
@@ -156,7 +144,11 @@ class CloudMergerAndAccumulator:
         self.base_field_names = None
         self.base_out_fields = None
 
-        # 参数（这些可以继续用 param，不影响“写死启动话题”）
+        # 启动方式。默认直接运行；需要外部触发时再在 launch 中打开。
+        self.wait_for_start = bool(rospy.get_param("~wait_for_start", False))
+        self.start_topic = rospy.get_param("~start_topic", "/start_exploration")
+
+        # 点云处理参数
         self.window_size = int(rospy.get_param("~window_size", 10))
         self.publish_every_n = int(rospy.get_param("~publish_every_n", 5))
         self.voxel_leaf = float(rospy.get_param("~voxel_leaf", 0.1))
@@ -180,6 +172,21 @@ class CloudMergerAndAccumulator:
         self.sync_slop = float(rospy.get_param("~sync_slop", 0.10))
         self.sync_queue = int(rospy.get_param("~sync_queue", 10))
 
+        if self.wait_for_start:
+            self.start_sub = rospy.Subscriber(
+                self.start_topic, Bool, self.cb_start, queue_size=5
+            )
+            rospy.logwarn(
+                f"[CloudMergerAndAccumulator] Waiting for '{self.start_topic}' "
+                "(std_msgs/Bool, data=True)."
+            )
+        else:
+            self.started = True
+            rospy.loginfo(
+                "[CloudMergerAndAccumulator] wait_for_start=false; start processing immediately."
+            )
+            self._init_processing()
+
     def cb_start(self, msg: Bool):
         if msg is None:
             return
@@ -198,10 +205,12 @@ class CloudMergerAndAccumulator:
         self._init_processing()
 
         # 如果你不希望后续再触发，可注销 start 订阅
-        try:
-            self.start_sub.unregister()
-        except Exception:
-            pass
+        if self.start_sub is not None:
+            try:
+                self.start_sub.unregister()
+            except Exception:
+                pass
+            self.start_sub = None
 
     def _init_processing(self):
         if self.processing_inited:

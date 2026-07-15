@@ -5,7 +5,9 @@ Panels:
     Property Tree Widget:
       Expanded:
         - /Status1
+        - /RegisteredScan1
         - /RegisteredScan1/Autocompute Value Bounds1
+        - /GridMap1
         - /PointCloud21
       Splitter Ratio: 0.5
     Tree Height: 591
@@ -26,7 +28,7 @@ Panels:
   - Class: rviz/Time
     Name: Time
     SyncMode: 0
-    SyncSource: PointCloud2
+    SyncSource: RegisteredScan
 Preferences:
   PromptSaveOnExit: true
 Toolbars:
@@ -120,7 +122,7 @@ Visualization Manager:
       Color: 255; 255; 255
       Color Transformer: AxisColor
       Decay Time: 0
-      Enabled: false
+      Enabled: true
       Invert Rainbow: false
       Max Color: 255; 255; 255
       Min Color: 0; 0; 0
@@ -131,11 +133,11 @@ Visualization Manager:
       Size (Pixels): 5
       Size (m): 0.009999999776482582
       Style: Points
-      Topic: /vehicle0/registered_scan
+      Topic: /vehicle0/registered_scan_accum_10
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: true
-      Value: false
+      Value: true
     - Angle Tolerance: 0.10000000149011612
       Class: rviz/Odometry
       Covariance:
@@ -177,7 +179,7 @@ Visualization Manager:
       Color: 200; 200; 200
       Color Layer: traversability_fine_tracked
       Color Transformer: IntensityLayer
-      Enabled: false
+      Enabled: true
       Height Layer: traversability_fine_tracked
       Height Transformer: Layer
       History Length: 1
@@ -191,7 +193,7 @@ Visualization Manager:
       Topic: /vehicle0/trav_map
       Unreliable: false
       Use Rainbow: false
-      Value: false
+      Value: true
     - Class: rviz/Marker
       Enabled: true
       Marker Topic: /vehicle0/tare_visualizer/local_planning_horizon
@@ -205,14 +207,7 @@ Visualization Manager:
       Marker Topic: /vehicle0/tare_planner_node/sparse_topological_map/markers
       Name: MarkerArray
       Namespaces:
-        active_subspace_centers: true
-        global_sparse_edges: true
-        global_sparse_nodes: true
-        inter_subspace_region_edges: true
-        intra_subspace_region_edges: true
-        region_interface_edges: true
-        region_labels: true
-        region_representatives: true
+        {}
       Queue Size: 100
       Value: true
     - Alpha: 1
@@ -296,7 +291,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 82.33810424804688
+      Distance: 7.895707607269287
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -304,17 +299,17 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: -3.414438247680664
-        Y: -20.41776466369629
-        Z: -0.5093939304351807
+        X: 0.04408721625804901
+        Y: -6.722775936126709
+        Z: 1.9235296249389648
       Focal Shape Fixed Size: false
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 1.5697963237762451
+      Pitch: 1.1147969961166382
       Target Frame: vehicle0/vehicle
-      Yaw: 3.160395860671997
+      Yaw: 4.640397548675537
     Saved: ~
 Window Geometry:
   Displays:

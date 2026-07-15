@@ -29,13 +29,10 @@ int main(int argc, char **argv)
 
   ROS_INFO("Starting multi_robot_mapping_node...");
 
-  // Create mapping object
   Mapping mapping(nh, pnh);
 
-  // // Initialize the mapping node
-  // mapping.init();
+  ROS_INFO("multi_robot_mapping_node is running");
 
-  // Keep the node running
   ros::spin();
 
   ROS_INFO("Shutting down multi_robot_mapping_node");
@@ -101,64 +98,34 @@ Mapping::Mapping(ros::NodeHandle &nh, ros::NodeHandle &pnh)
 
   ROS_INFO("Mapping::init() - Initializing mapping node");
 
-  // Load ROS parameters from launch file or parameter server
   loadParameters();
 
-  // Load vehicle models
   loadRobotModels();
 
-  // Initialize grid map
   initGridMap();
 
-  ROS_INFO("Subscribed to origin topic: %s", origin_topic_.c_str());
-  origin_sub_ = nh_.subscribe<geometry_msgs::PointStamped>(origin_topic_, 10, &Mapping::originCallback, this);
+  // ROS_INFO("Subscribed to origin topic: %s", origin_topic_.c_str());
+  // origin_sub_ = nh_.subscribe<geometry_msgs::PointStamped>(origin_topic_, 10, &Mapping::originCallback, this);
 
-  ROS_INFO("Subscribed to viewpoint_vis topic: %s", viewpoint_vis_topic_.c_str());
-  viewpoint_vis_cloud_sub_ = nh_.subscribe(viewpoint_vis_topic_, 5, &Mapping::viewpointVisCloudCallback, this);
+  // ROS_INFO("Subscribed to viewpoint_vis topic: %s", viewpoint_vis_topic_.c_str());
+  // viewpoint_vis_cloud_sub_ = nh_.subscribe(viewpoint_vis_topic_, 5, &Mapping::viewpointVisCloudCallback, this);
 
-  // // Subscribe to point cloud topics
-  // ROS_INFO("Subscribing to point cloud and odometry topics with time synchronization...");
-
-  // // Create message filters for synchronized subscription
-  // cloud_filter_sub_ = std::make_shared<message_filters::Subscriber<sensor_msgs::PointCloud2>>(
-  //     nh_, scan_topic_, queue_size_);
-
-  // odom_filter_sub_ = std::make_shared<message_filters::Subscriber<nav_msgs::Odometry>>(
-  //     nh_, "/vehicle0/state_estimation", queue_size_);
-
-  // // Create approximate time synchronizer (allows small time differences)
-  // // Queue size of 10 means it will try to synchronize the last 10 messages from each topic
-  // sync_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(
-  //     SyncPolicy(queue_size_), *cloud_filter_sub_, *odom_filter_sub_);
-
-  // sync_->registerCallback(boost::bind(&Mapping::synchronizedCloudOdomCallback, this, _1, _2));
-
+  // Subscribe to point cloud topics
   ROS_INFO("Subscribing to point cloud and odometry topics with time synchronization...");
 
-  int queue_size_ = 10;
+  // Create message filters for synchronized subscription
   cloud_filter_sub_ = std::make_shared<message_filters::Subscriber<sensor_msgs::PointCloud2>>(
       nh_, scan_topic_, queue_size_);
 
   odom_filter_sub_ = std::make_shared<message_filters::Subscriber<nav_msgs::Odometry>>(
-      nh_, "state_estimation", queue_size_);
+      nh_, "/vehicle0/state_estimation", queue_size_);
 
-  // 新增两路点云
-  terrain_filter_sub_ = std::make_shared<message_filters::Subscriber<sensor_msgs::PointCloud2>>(
-      nh_, "terrain_map", queue_size_);
-
-  terrain_ext_filter_sub_ = std::make_shared<message_filters::Subscriber<sensor_msgs::PointCloud2>>(
-      nh_, "terrain_map_ext", queue_size_);
-
-  // 4路同步器
+  // Create approximate time synchronizer (allows small time differences)
+  // Queue size of 10 means it will try to synchronize the last 10 messages from each topic
   sync_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(
-      SyncPolicy(queue_size_),
-      *cloud_filter_sub_,
-      *odom_filter_sub_,
-      *terrain_filter_sub_,
-      *terrain_ext_filter_sub_);
+      SyncPolicy(queue_size_), *cloud_filter_sub_, *odom_filter_sub_);
 
-  // callback 变成 4 个参数
-  sync_->registerCallback(boost::bind(&Mapping::synchronizedCloudOdomCallback, this, _1, _2, _3, _4));
+  sync_->registerCallback(boost::bind(&Mapping::synchronizedCloudOdomCallback, this, _1, _2));
 
   // Create publisher for grid map
   gridmap_pub_ = nh_.advertise<grid_map_msgs::GridMap>("trav_map", 10);
@@ -279,55 +246,47 @@ void Mapping::loadParameters()
   // Load asynchronous processing parameters
   pnh_.param<bool>("skip_old_messages", skip_old_messages_, false);
 
-  // Load local grid map parameters
-  int nx, ny, nz;
-  double rx, ry, rz;
+  // // Load local grid map parameters
+  // int nx, ny, nz;
+  // double rx, ry, rz;
 
-  ros::Rate rate(10); // 10 Hz
-  while (ros::ok())
-  {
-    std::string ns = ros::this_node::getNamespace();
-    const std::string vp_prefix = ns + "/tare_planner_node/viewpoint_manager/";
+  // ros::Rate rate(10); // 10 Hz
+  // while (ros::ok())
+  // {
+  //   std::string ns = ros::this_node::getNamespace();
+  //   const std::string vp_prefix = ns + "/tare_planner_node/viewpoint_manager/";
+  //   const bool ok =
+  //       nh_.getParam(vp_prefix + "number_x", nx) &&
+  //       nh_.getParam(vp_prefix + "number_y", ny) &&
+  //       nh_.getParam(vp_prefix + "number_z", nz) &&
+  //       nh_.getParam(vp_prefix + "resolution_x", rx) &&
+  //       nh_.getParam(vp_prefix + "resolution_y", ry) &&
+  //       nh_.getParam(vp_prefix + "resolution_z", rz);
 
-    // const bool ok =
-    //     pnh_.getParam("/vehicle0/tare_planner_node/viewpoint_manager/number_x", nx) &&
-    //     pnh_.getParam("/vehicle0/tare_planner_node/viewpoint_manager/number_y", ny) &&
-    //     pnh_.getParam("/vehicle0/tare_planner_node/viewpoint_manager/number_z", nz) &&
-    //     pnh_.getParam("/vehicle0/tare_planner_node/viewpoint_manager/resolution_x", rx) &&
-    //     pnh_.getParam("/vehicle0/tare_planner_node/viewpoint_manager/resolution_y", ry) &&
-    //     pnh_.getParam("/vehicle0/tare_planner_node/viewpoint_manager/resolution_z", rz);
-    const bool ok =
-        nh_.getParam(vp_prefix + "number_x", nx) &&
-        nh_.getParam(vp_prefix + "number_y", ny) &&
-        nh_.getParam(vp_prefix + "number_z", nz) &&
-        nh_.getParam(vp_prefix + "resolution_x", rx) &&
-        nh_.getParam(vp_prefix + "resolution_y", ry) &&
-        nh_.getParam(vp_prefix + "resolution_z", rz);
+  //   if (ok)
+  //     break;
 
-    if (ok)
-      break;
+  //   ROS_WARN_THROTTLE(2.0,
+  //                     "Waiting for viewpoint_manager params... "
+  //                     "(number_x/y/z, resolution_x/y/z)");
+  //   rate.sleep();
+  // }
 
-    ROS_WARN_THROTTLE(2.0,
-                      "Waiting for viewpoint_manager params... "
-                      "(number_x/y/z, resolution_x/y/z)");
-    rate.sleep();
-  }
+  // // ros::ok() 变 false 时就直接返回，避免继续用未定义值
+  // if (!ros::ok())
+  //   return;
 
-  // ros::ok() 变 false 时就直接返回，避免继续用未定义值
-  if (!ros::ok())
-    return;
+  // // 赋值到成员变量
+  // viewpoint_number_x_ = nx;
+  // viewpoint_number_y_ = ny;
+  // viewpoint_number_z_ = nz;
+  // viewpoint_resolution_x_ = rx;
+  // viewpoint_resolution_y_ = ry;
+  // viewpoint_resolution_z_ = rz;
 
-  // 赋值到成员变量
-  viewpoint_number_x_ = nx;
-  viewpoint_number_y_ = ny;
-  viewpoint_number_z_ = nz;
-  viewpoint_resolution_x_ = rx;
-  viewpoint_resolution_y_ = ry;
-  viewpoint_resolution_z_ = rz;
-
-  viewpoint_grid_size_x_ = viewpoint_number_x_ * viewpoint_resolution_x_;
-  viewpoint_grid_size_y_ = viewpoint_number_y_ * viewpoint_resolution_y_;
-  viewpoint_grid_size_z_ = viewpoint_number_z_ * viewpoint_resolution_z_;
+  // viewpoint_grid_size_x_ = viewpoint_number_x_ * viewpoint_resolution_x_;
+  // viewpoint_grid_size_y_ = viewpoint_number_y_ * viewpoint_resolution_y_;
+  // viewpoint_grid_size_z_ = viewpoint_number_z_ * viewpoint_resolution_z_;
 
   // Log loaded parameters
   ROS_INFO("Parameters loaded:");
@@ -443,134 +402,59 @@ bool Mapping::loadModelFromCsv(const std::string &path, HeightGrid &model_storag
   return true;
 }
 
-void Mapping::originCallback(const geometry_msgs::PointStampedConstPtr &msg)
-{
-  std::lock_guard<std::mutex> lock(origin_mutex_);
-
-  latest_origin_.x() = msg->point.x;
-  latest_origin_.y() = msg->point.y;
-  latest_origin_.z() = msg->point.z;
-  latest_origin_stamp_ = msg->header.stamp;
-
-  has_origin_.store(true, std::memory_order_release);
-
-  if (debug_mode_)
-  {
-    ROS_DEBUG("Received origin: [%.3f %.3f %.3f] stamp=%.3f",
-              latest_origin_.x(), latest_origin_.y(), latest_origin_.z(),
-              latest_origin_stamp_.toSec());
-  }
-}
-
-void Mapping::viewpointVisCloudCallback(const sensor_msgs::PointCloud2ConstPtr &msg)
-{
-  // 转成 PCL（按你的需求：PointXYZI）
-  pcl::PointCloud<pcl::PointXYZI>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZI>());
-  try
-  {
-    pcl::fromROSMsg(*msg, *cloud);
-  }
-  catch (const std::exception &e)
-  {
-    ROS_WARN_STREAM("viewpointVisCloudCallback: fromROSMsg failed: " << e.what());
-    return;
-  }
-
-  // 防御：去掉 NaN/Inf（可选但推荐）
-  std::vector<int> idx;
-  pcl::removeNaNFromPointCloud(*cloud, *cloud, idx);
-
-  // 缓存最新一帧（线程安全）
-  {
-    std::lock_guard<std::mutex> lk(viewpoint_vis_mutex_);
-    *latest_viewpoint_vis_cloud_ = *cloud; // 深拷贝到缓存
-    latest_viewpoint_vis_stamp_ = msg->header.stamp;
-    latest_viewpoint_vis_frame_id_ = msg->header.frame_id;
-    has_viewpoint_vis_.store(true, std::memory_order_release);
-  }
-
-  ROS_INFO("Received synchronized point cloud.");
-}
-
-// void Mapping::synchronizedCloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr &cloud_msg,
-//                                             const nav_msgs::OdometryConstPtr &odom_msg)
+// void Mapping::originCallback(const geometry_msgs::PointStampedConstPtr &msg)
 // {
-//   processSynchronizedMessages(cloud_msg, odom_msg);
+//   std::lock_guard<std::mutex> lock(origin_mutex_);
+
+//   latest_origin_.x() = msg->point.x;
+//   latest_origin_.y() = msg->point.y;
+//   latest_origin_.z() = msg->point.z;
+//   latest_origin_stamp_ = msg->header.stamp;
+
+//   has_origin_.store(true, std::memory_order_release);
+
+//   if (debug_mode_)
+//   {
+//     ROS_DEBUG("Received origin: [%.3f %.3f %.3f] stamp=%.3f",
+//               latest_origin_.x(), latest_origin_.y(), latest_origin_.z(),
+//               latest_origin_stamp_.toSec());
+//   }
 // }
 
-void Mapping::synchronizedCloudOdomCallback(
-    const sensor_msgs::PointCloud2ConstPtr &cloud_msg,
-    const nav_msgs::OdometryConstPtr &odom_msg,
-    const sensor_msgs::PointCloud2ConstPtr &terrain_msg,
-    const sensor_msgs::PointCloud2ConstPtr &terrain_ext_msg)
+// void Mapping::viewpointVisCloudCallback(const sensor_msgs::PointCloud2ConstPtr &msg)
+// {
+//   // 转成 PCL（按你的需求：PointXYZI）
+//   pcl::PointCloud<pcl::PointXYZI>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZI>());
+//   try
+//   {
+//     pcl::fromROSMsg(*msg, *cloud);
+//   }
+//   catch (const std::exception &e)
+//   {
+//     ROS_WARN_STREAM("viewpointVisCloudCallback: fromROSMsg failed: " << e.what());
+//     return;
+//   }
+
+//   // 防御：去掉 NaN/Inf（可选但推荐）
+//   std::vector<int> idx;
+//   pcl::removeNaNFromPointCloud(*cloud, *cloud, idx);
+
+//   // 缓存最新一帧（线程安全）
+//   {
+//     std::lock_guard<std::mutex> lk(viewpoint_vis_mutex_);
+//     *latest_viewpoint_vis_cloud_ = *cloud; // 深拷贝到缓存
+//     latest_viewpoint_vis_stamp_ = msg->header.stamp;
+//     latest_viewpoint_vis_frame_id_ = msg->header.frame_id;
+//     has_viewpoint_vis_.store(true, std::memory_order_release);
+//   }
+
+//   ROS_INFO("Received synchronized point cloud.");
+// }
+
+void Mapping::synchronizedCloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr &cloud_msg,
+                                            const nav_msgs::OdometryConstPtr &odom_msg)
 {
-  using PointT = pcl::PointXYZI; // 如果你的点不带 intensity，就换成 pcl::PointXYZ
-
-  // -------- 1) ROS msg -> PCL --------
-  pcl::PointCloud<PointT>::Ptr cloud(new pcl::PointCloud<PointT>());
-  pcl::fromROSMsg(*cloud_msg, *cloud);
-
-  pcl::PointCloud<PointT>::Ptr terrain(new pcl::PointCloud<PointT>());
-  if (terrain_msg && !terrain_msg->data.empty())
-    pcl::fromROSMsg(*terrain_msg, *terrain);
-
-  pcl::PointCloud<PointT>::Ptr terrain_ext(new pcl::PointCloud<PointT>());
-  if (terrain_ext_msg && !terrain_ext_msg->data.empty())
-    pcl::fromROSMsg(*terrain_ext_msg, *terrain_ext);
-
-  // -------- 2) 可选：frame_id 检查（不一致就先别拼，避免乱图）--------
-  const std::string &base_frame = cloud_msg->header.frame_id;
-  if (terrain_msg && !terrain_msg->header.frame_id.empty() && terrain_msg->header.frame_id != base_frame)
-  {
-    ROS_WARN_STREAM_THROTTLE(1.0, "terrain_map frame_id != scan frame_id. Skip merge. "
-                                      << terrain_msg->header.frame_id << " vs " << base_frame);
-    terrain->clear();
-  }
-  if (terrain_ext_msg && !terrain_ext_msg->header.frame_id.empty() && terrain_ext_msg->header.frame_id != base_frame)
-  {
-    ROS_WARN_STREAM_THROTTLE(1.0, "terrain_map_ext frame_id != scan frame_id. Skip merge. "
-                                      << terrain_ext_msg->header.frame_id << " vs " << base_frame);
-    terrain_ext->clear();
-  }
-
-  // -------- 3) 合并三路点云 --------
-  terrain->clear();
-  terrain_ext->clear();
-
-  pcl::PointCloud<PointT>::Ptr merged(new pcl::PointCloud<PointT>());
-  merged->reserve(cloud->size() + terrain->size() + terrain_ext->size());
-
-  *merged += *cloud;
-  if (!terrain->empty())
-    *merged += *terrain;
-  if (!terrain_ext->empty())
-    *merged += *terrain_ext;
-
-  // -------- 4) 滤波：先去 NaN，再体素下采样 --------
-  // 4.1 remove NaN/Inf
-  std::vector<int> index;
-  pcl::removeNaNFromPointCloud(*merged, *merged, index);
-
-  // 4.2 voxel grid
-  pcl::PointCloud<PointT>::Ptr filtered(new pcl::PointCloud<PointT>());
-  pcl::VoxelGrid<PointT> vg;
-  const float leaf = 0.2f; // 体素大小按你需要调，比如 0.1 / 0.2 / 0.3
-  vg.setLeafSize(leaf, leaf, leaf);
-  vg.setInputCloud(merged);
-  vg.filter(*filtered);
-
-  // -------- 5) PCL -> ROS msg --------
-  sensor_msgs::PointCloud2Ptr filtered_msg(new sensor_msgs::PointCloud2());
-  pcl::toROSMsg(*filtered, *filtered_msg);
-
-  // 保持 header 一致，保证下游 tf、时间戳逻辑不乱
-  filtered_msg->header = cloud_msg->header;
-
-  // Ptr -> ConstPtr（一般 boost::shared_ptr 允许这样转）
-  sensor_msgs::PointCloud2ConstPtr filtered_const(filtered_msg);
-
-  // -------- 6) 传入你的处理流程 --------
-  processSynchronizedMessages(filtered_const, odom_msg);
+  processSynchronizedMessages(cloud_msg, odom_msg);
 }
 
 void Mapping::processSynchronizedMessages(const sensor_msgs::PointCloud2ConstPtr &cloud_msg,
@@ -2777,94 +2661,94 @@ Eigen::Vector3d Mapping::fitPlane(const std::vector<Eigen::Vector3d> &points)
 void Mapping::publishGridMap()
 {
   grid_map_msgs::GridMap message;
-  // if (!buildGridMapMessage(message))
-  if (!buildGridMapFromViewpointCloud(message))
+  if (!buildGridMapMessage(message))
+  // if (!buildGridMapFromViewpointCloud(message))
   {
     return;
   }
   gridmap_pub_.publish(message);
 }
 
-// bool Mapping::buildGridMapMessage(grid_map_msgs::GridMap &message)
-// {
-//   // ==========================================
-//   // [1] 加锁：保护 height_map_ 的读操作
-//   // ==========================================
-//   // gridmap_publish_mutex_ 主要目的是避免：
-//   // - 另一个线程正在更新 height_map_（写）
-//   // - 本线程同时在读取/裁剪/删除 layer
-//   // 从而造成数据竞争或崩溃
-//   std::lock_guard<std::mutex> lock(gridmap_publish_mutex_);
+bool Mapping::buildGridMapMessage(grid_map_msgs::GridMap &message)
+{
+  // ==========================================
+  // [1] 加锁：保护 height_map_ 的读操作
+  // ==========================================
+  // gridmap_publish_mutex_ 主要目的是避免：
+  // - 另一个线程正在更新 height_map_（写）
+  // - 本线程同时在读取/裁剪/删除 layer
+  // 从而造成数据竞争或崩溃
+  std::lock_guard<std::mutex> lock(gridmap_publish_mutex_);
 
-//   // ==========================================
-//   // [2] 读取车辆当前位置（快照）
-//   // ==========================================
-//   // 这里单独对 vehicle_pose_mutex_ 加锁，是因为 vehicle_position_
-//   // 由里程计回调/处理线程更新，需要线程安全
-//   Eigen::Vector3d current_pos;
-//   {
-//     std::lock_guard<std::mutex> pose_lock(vehicle_pose_mutex_);
-//     current_pos = vehicle_position_;
-//   }
+  // ==========================================
+  // [2] 读取车辆当前位置（快照）
+  // ==========================================
+  // 这里单独对 vehicle_pose_mutex_ 加锁，是因为 vehicle_position_
+  // 由里程计回调/处理线程更新，需要线程安全
+  Eigen::Vector3d current_pos;
+  {
+    std::lock_guard<std::mutex> pose_lock(vehicle_pose_mutex_);
+    current_pos = vehicle_position_;
+  }
 
-//   // ==========================================
-//   // [3] 从全局 height_map_ 裁剪局部 submap
-//   // ==========================================
-//   // local_map_size_x_/y_ 决定局部地图窗口的长宽（单位：m）
-//   // getSubmap 会复制出一个新的 GridMap（local_map），通常包括数据矩阵
-//   grid_map::Length submap_length(local_map_size_x_, local_map_size_y_);
-//   bool success;
+  // ==========================================
+  // [3] 从全局 height_map_ 裁剪局部 submap
+  // ==========================================
+  // local_map_size_x_/y_ 决定局部地图窗口的长宽（单位：m）
+  // getSubmap 会复制出一个新的 GridMap（local_map），通常包括数据矩阵
+  grid_map::Length submap_length(local_map_size_x_, local_map_size_y_);
+  bool success;
 
-//   // 以车辆当前位置为中心裁剪一块局部区域
-//   // 注意：grid_map::Position 的坐标单位是 meters（世界系或 map frame）
-//   grid_map::GridMap local_map = height_map_.getSubmap(
-//       grid_map::Position(current_pos.x(), current_pos.y()),
-//       submap_length,
-//       success);
+  // 以车辆当前位置为中心裁剪一块局部区域
+  // 注意：grid_map::Position 的坐标单位是 meters（世界系或 map frame）
+  grid_map::GridMap local_map = height_map_.getSubmap(
+      grid_map::Position(current_pos.x(), current_pos.y()),
+      submap_length,
+      success);
 
-//   // 如果裁剪失败，返回 false（例如：当前位置不在地图范围内）
-//   if (!success)
-//   {
-//     return false;
-//   }
+  // 如果裁剪失败，返回 false（例如：当前位置不在地图范围内）
+  if (!success)
+  {
+    return false;
+  }
 
-//   // ==========================================
-//   // [4] 只保留白名单层（减少消息体积）
-//   // ==========================================
-//   // 发布层白名单：只传这些层，避免把很多内部计算层发出去导致消息巨大
-//   static const std::vector<std::string> layers_to_publish = {
-//       "elevation",
-//       "elevation_BGK",
-//       "slope",
-//       "roughness",
-//       "step",
-//       "traversability",
-//       "traversability_fine_wheeled",
-//       "traversability_fine_tracked",
-//       "critical"};
+  // ==========================================
+  // [4] 只保留白名单层（减少消息体积）
+  // ==========================================
+  // 发布层白名单：只传这些层，避免把很多内部计算层发出去导致消息巨大
+  static const std::vector<std::string> layers_to_publish = {
+      "elevation",
+      "elevation_BGK",
+      "slope",
+      "roughness",
+      "step",
+      "traversability",
+      "traversability_fine_wheeled",
+      "traversability_fine_tracked",
+      "critical"};
 
-//   // local_map.getLayers() 返回当前 local_map 中实际存在的 layer 名称列表
-//   const auto existing_layers = local_map.getLayers();
+  // local_map.getLayers() 返回当前 local_map 中实际存在的 layer 名称列表
+  const auto existing_layers = local_map.getLayers();
 
-//   // 遍历 local_map 的所有 layer，如果不在白名单里就删掉
-//   // erase(layer) 会把对应 Matrix 从 local_map 里移除
-//   for (const auto &layer : existing_layers)
-//   {
-//     if (std::find(layers_to_publish.begin(), layers_to_publish.end(), layer) == layers_to_publish.end())
-//     {
-//       local_map.erase(layer);
-//     }
-//   }
+  // 遍历 local_map 的所有 layer，如果不在白名单里就删掉
+  // erase(layer) 会把对应 Matrix 从 local_map 里移除
+  for (const auto &layer : existing_layers)
+  {
+    if (std::find(layers_to_publish.begin(), layers_to_publish.end(), layer) == layers_to_publish.end())
+    {
+      local_map.erase(layer);
+    }
+  }
 
-//   // ==========================================
-//   // [5] 转 ROS 消息
-//   // ==========================================
-//   // GridMapRosConverter 会把 local_map 的 metadata（尺寸、分辨率、坐标系）
-//   // 和各 layer 的 matrix 数据打包成 grid_map_msgs::GridMap 消息
-//   grid_map::GridMapRosConverter::toMessage(local_map, message);
+  // ==========================================
+  // [5] 转 ROS 消息
+  // ==========================================
+  // GridMapRosConverter 会把 local_map 的 metadata（尺寸、分辨率、坐标系）
+  // 和各 layer 的 matrix 数据打包成 grid_map_msgs::GridMap 消息
+  grid_map::GridMapRosConverter::toMessage(local_map, message);
 
-//   return true;
-// }
+  return true;
+}
 
 // bool Mapping::buildGridMapMessage(grid_map_msgs::GridMap &message)
 // {
@@ -2986,204 +2870,204 @@ void Mapping::publishGridMap()
 //   return true;
 // }
 
-bool Mapping::buildGridMapMessage(grid_map_msgs::GridMap &message)
-{
-  // ==========================================================
-  // [0] 获取最新 origin（ViewPoint 左下角），没有就不发布
-  // ==========================================================
-  if (!has_origin_.load(std::memory_order_acquire))
-  {
-    ROS_WARN_THROTTLE(2.0, "No viewpoint origin yet, skip grid map publish.");
-    return false;
-  }
+// bool Mapping::buildGridMapMessage(grid_map_msgs::GridMap &message)
+// {
+//   // ==========================================================
+//   // [0] 获取最新 origin（ViewPoint 左下角），没有就不发布
+//   // ==========================================================
+//   if (!has_origin_.load(std::memory_order_acquire))
+//   {
+//     ROS_WARN_THROTTLE(2.0, "No viewpoint origin yet, skip grid map publish.");
+//     return false;
+//   }
 
-  Eigen::Vector3d origin;
-  ros::Time origin_stamp;
-  {
-    std::lock_guard<std::mutex> lk(origin_mutex_);
-    origin = latest_origin_;
-    origin_stamp = latest_origin_stamp_;
-  }
+//   Eigen::Vector3d origin;
+//   ros::Time origin_stamp;
+//   {
+//     std::lock_guard<std::mutex> lk(origin_mutex_);
+//     origin = latest_origin_;
+//     origin_stamp = latest_origin_stamp_;
+//   }
 
-  // ==========================================================
-  // [1] 加锁保护 height_map_（读）
-  // ==========================================================
-  std::lock_guard<std::mutex> lock(gridmap_publish_mutex_);
+//   // ==========================================================
+//   // [1] 加锁保护 height_map_（读）
+//   // ==========================================================
+//   std::lock_guard<std::mutex> lock(gridmap_publish_mutex_);
 
-  // ==========================================================
-  // [2] 输出地图几何：严格对齐 ViewPoint（res + origin）
-  //     grid_map 只有一个二维 resolution，所以用 viewpoint_resolution_x_
-  // ==========================================================
-  const double vp_res_x = viewpoint_resolution_x_;
-  const double vp_res_y = viewpoint_resolution_y_;
+//   // ==========================================================
+//   // [2] 输出地图几何：严格对齐 ViewPoint（res + origin）
+//   //     grid_map 只有一个二维 resolution，所以用 viewpoint_resolution_x_
+//   // ==========================================================
+//   const double vp_res_x = viewpoint_resolution_x_;
+//   const double vp_res_y = viewpoint_resolution_y_;
 
-  double out_res = vp_res_x;
-  if (std::fabs(vp_res_x - vp_res_y) > 1e-9)
-  {
-    ROS_WARN_THROTTLE(2.0,
-                      "ViewPoint res x!=y (%.4f vs %.4f). grid_map uses single res, using res_x.",
-                      vp_res_x, vp_res_y);
-  }
+//   double out_res = vp_res_x;
+//   if (std::fabs(vp_res_x - vp_res_y) > 1e-9)
+//   {
+//     ROS_WARN_THROTTLE(2.0,
+//                       "ViewPoint res x!=y (%.4f vs %.4f). grid_map uses single res, using res_x.",
+//                       vp_res_x, vp_res_y);
+//   }
 
-  if (out_res <= 0.0 || viewpoint_number_x_ <= 0 || viewpoint_number_y_ <= 0)
-  {
-    ROS_WARN_THROTTLE(2.0, "Invalid viewpoint params: res=%.4f, nx=%d, ny=%d",
-                      out_res, viewpoint_number_x_, viewpoint_number_y_);
-    return false;
-  }
+//   if (out_res <= 0.0 || viewpoint_number_x_ <= 0 || viewpoint_number_y_ <= 0)
+//   {
+//     ROS_WARN_THROTTLE(2.0, "Invalid viewpoint params: res=%.4f, nx=%d, ny=%d",
+//                       out_res, viewpoint_number_x_, viewpoint_number_y_);
+//     return false;
+//   }
 
-  // 窗口大小（米），严格用 number * ViewPoint res
-  const double size_x = static_cast<double>(viewpoint_number_x_) * out_res;
-  const double size_y = static_cast<double>(viewpoint_number_y_) * out_res;
+//   // 窗口大小（米），严格用 number * ViewPoint res
+//   const double size_x = static_cast<double>(viewpoint_number_x_) * out_res;
+//   const double size_y = static_cast<double>(viewpoint_number_y_) * out_res;
 
-  // 让输出 map 的 min corner = origin（左下角）
-  const grid_map::Position out_center(origin.x() + 0.5 * size_x,
-                                      origin.y() + 0.5 * size_y);
+//   // 让输出 map 的 min corner = origin（左下角）
+//   const grid_map::Position out_center(origin.x() + 0.5 * size_x,
+//                                       origin.y() + 0.5 * size_y);
 
-  grid_map::GridMap out_map;
-  out_map.setFrameId(height_map_.getFrameId()); // 若你希望固定 "map"，也可以写 "map"
-  out_map.setTimestamp(origin_stamp.toNSec());
-  out_map.setGeometry(grid_map::Length(size_x, size_y), out_res, out_center);
+//   grid_map::GridMap out_map;
+//   out_map.setFrameId(height_map_.getFrameId()); // 若你希望固定 "map"，也可以写 "map"
+//   out_map.setTimestamp(origin_stamp.toNSec());
+//   out_map.setGeometry(grid_map::Length(size_x, size_y), out_res, out_center);
 
-  // ==========================================================
-  // [3] 选择发布层 + 每层的 pooling 策略
-  //     你要求 traversability 系列由 MIN 改为 MAX
-  // ==========================================================
-  enum class PoolType
-  {
-    MIN,
-    MAX,
-    MEAN
-  };
+//   // ==========================================================
+//   // [3] 选择发布层 + 每层的 pooling 策略
+//   //     你要求 traversability 系列由 MIN 改为 MAX
+//   // ==========================================================
+//   enum class PoolType
+//   {
+//     MIN,
+//     MAX,
+//     MEAN
+//   };
 
-  struct LayerPolicy
-  {
-    std::string name;
-    PoolType type;
-  };
+//   struct LayerPolicy
+//   {
+//     std::string name;
+//     PoolType type;
+//   };
 
-  const std::vector<LayerPolicy> policies = {
-      {"elevation", PoolType::MEAN},
-      {"elevation_BGK", PoolType::MEAN},
-      {"slope", PoolType::MEAN},
-      {"roughness", PoolType::MEAN},
-      {"step", PoolType::MAX},
-      {"traversability", PoolType::MAX},
-      {"traversability_fine_wheeled", PoolType::MAX},
-      {"traversability_fine_tracked", PoolType::MAX},
-      {"critical", PoolType::MAX},
-  };
+//   const std::vector<LayerPolicy> policies = {
+//       {"elevation", PoolType::MEAN},
+//       {"elevation_BGK", PoolType::MEAN},
+//       {"slope", PoolType::MEAN},
+//       {"roughness", PoolType::MEAN},
+//       {"step", PoolType::MAX},
+//       {"traversability", PoolType::MAX},
+//       {"traversability_fine_wheeled", PoolType::MAX},
+//       {"traversability_fine_tracked", PoolType::MAX},
+//       {"critical", PoolType::MAX},
+//   };
 
-  // 只添加 height_map_ 中实际存在的层
-  std::vector<LayerPolicy> used;
-  used.reserve(policies.size());
-  for (const auto &p : policies)
-  {
-    if (height_map_.exists(p.name))
-    {
-      out_map.add(p.name, std::numeric_limits<float>::quiet_NaN());
-      used.push_back(p);
-    }
-  }
+//   // 只添加 height_map_ 中实际存在的层
+//   std::vector<LayerPolicy> used;
+//   used.reserve(policies.size());
+//   for (const auto &p : policies)
+//   {
+//     if (height_map_.exists(p.name))
+//     {
+//       out_map.add(p.name, std::numeric_limits<float>::quiet_NaN());
+//       used.push_back(p);
+//     }
+//   }
 
-  if (used.empty())
-  {
-    ROS_WARN_THROTTLE(2.0, "None of publish layers exist in height_map_.");
-    return false;
-  }
+//   if (used.empty())
+//   {
+//     ROS_WARN_THROTTLE(2.0, "None of publish layers exist in height_map_.");
+//     return false;
+//   }
 
-  // ==========================================================
-  // [4] 块聚合 pooling：每个 coarse cell 覆盖 out_res × out_res 的窗口
-  //     在高分辨率 height_map_ 上聚合得到一个值
-  // ==========================================================
-  auto isFinite = [](float v) -> bool
-  { return std::isfinite(v); };
+//   // ==========================================================
+//   // [4] 块聚合 pooling：每个 coarse cell 覆盖 out_res × out_res 的窗口
+//   //     在高分辨率 height_map_ 上聚合得到一个值
+//   // ==========================================================
+//   auto isFinite = [](float v) -> bool
+//   { return std::isfinite(v); };
 
-  auto poolLayerOnSubmap = [&](const std::string &layer,
-                               const grid_map::SubmapGeometry &subgeom,
-                               PoolType type) -> float
-  {
-    grid_map::SubmapIterator it(subgeom);
+//   auto poolLayerOnSubmap = [&](const std::string &layer,
+//                                const grid_map::SubmapGeometry &subgeom,
+//                                PoolType type) -> float
+//   {
+//     grid_map::SubmapIterator it(subgeom);
 
-    if (type == PoolType::MEAN)
-    {
-      double sum = 0.0;
-      int cnt = 0;
-      for (; !it.isPastEnd(); ++it)
-      {
-        const grid_map::Index idx = *it;
-        const float v = height_map_.at(layer, idx);
-        if (!isFinite(v))
-          continue;
-        sum += v;
-        cnt++;
-      }
-      return (cnt > 0) ? static_cast<float>(sum / cnt)
-                       : std::numeric_limits<float>::quiet_NaN();
-    }
-    else if (type == PoolType::MIN)
-    {
-      float best = std::numeric_limits<float>::infinity();
-      bool has = false;
-      for (; !it.isPastEnd(); ++it)
-      {
-        const grid_map::Index idx = *it;
-        const float v = height_map_.at(layer, idx);
-        if (!isFinite(v))
-          continue;
-        best = std::min(best, v);
-        has = true;
-      }
-      return has ? best : std::numeric_limits<float>::quiet_NaN();
-    }
-    else // MAX
-    {
-      float best = -std::numeric_limits<float>::infinity();
-      bool has = false;
-      for (; !it.isPastEnd(); ++it)
-      {
-        const grid_map::Index idx = *it;
-        const float v = height_map_.at(layer, idx);
-        if (!isFinite(v))
-          continue;
-        best = std::max(best, v);
-        has = true;
-      }
-      return has ? best : std::numeric_limits<float>::quiet_NaN();
-    }
-  };
+//     if (type == PoolType::MEAN)
+//     {
+//       double sum = 0.0;
+//       int cnt = 0;
+//       for (; !it.isPastEnd(); ++it)
+//       {
+//         const grid_map::Index idx = *it;
+//         const float v = height_map_.at(layer, idx);
+//         if (!isFinite(v))
+//           continue;
+//         sum += v;
+//         cnt++;
+//       }
+//       return (cnt > 0) ? static_cast<float>(sum / cnt)
+//                        : std::numeric_limits<float>::quiet_NaN();
+//     }
+//     else if (type == PoolType::MIN)
+//     {
+//       float best = std::numeric_limits<float>::infinity();
+//       bool has = false;
+//       for (; !it.isPastEnd(); ++it)
+//       {
+//         const grid_map::Index idx = *it;
+//         const float v = height_map_.at(layer, idx);
+//         if (!isFinite(v))
+//           continue;
+//         best = std::min(best, v);
+//         has = true;
+//       }
+//       return has ? best : std::numeric_limits<float>::quiet_NaN();
+//     }
+//     else // MAX
+//     {
+//       float best = -std::numeric_limits<float>::infinity();
+//       bool has = false;
+//       for (; !it.isPastEnd(); ++it)
+//       {
+//         const grid_map::Index idx = *it;
+//         const float v = height_map_.at(layer, idx);
+//         if (!isFinite(v))
+//           continue;
+//         best = std::max(best, v);
+//         has = true;
+//       }
+//       return has ? best : std::numeric_limits<float>::quiet_NaN();
+//     }
+//   };
 
-  const grid_map::Length cell_window(out_res, out_res);
+//   const grid_map::Length cell_window(out_res, out_res);
 
-  for (grid_map::GridMapIterator it(out_map); !it.isPastEnd(); ++it)
-  {
-    const grid_map::Index idx_out(*it);
+//   for (grid_map::GridMapIterator it(out_map); !it.isPastEnd(); ++it)
+//   {
+//     const grid_map::Index idx_out(*it);
 
-    // coarse cell 中心点坐标
-    grid_map::Position cell_center;
-    out_map.getPosition(idx_out, cell_center);
+//     // coarse cell 中心点坐标
+//     grid_map::Position cell_center;
+//     out_map.getPosition(idx_out, cell_center);
 
-    // 如果高分辨率图不覆盖该区域，保持 NaN
-    if (!height_map_.isInside(cell_center))
-      continue;
+//     // 如果高分辨率图不覆盖该区域，保持 NaN
+//     if (!height_map_.isInside(cell_center))
+//       continue;
 
-    bool ok = false;
-    grid_map::SubmapGeometry subgeom(height_map_, cell_center, cell_window, ok);
-    if (!ok)
-      continue;
+//     bool ok = false;
+//     grid_map::SubmapGeometry subgeom(height_map_, cell_center, cell_window, ok);
+//     if (!ok)
+//       continue;
 
-    for (const auto &p : used)
-    {
-      out_map.at(p.name, idx_out) = poolLayerOnSubmap(p.name, subgeom, p.type);
-    }
-  }
+//     for (const auto &p : used)
+//     {
+//       out_map.at(p.name, idx_out) = poolLayerOnSubmap(p.name, subgeom, p.type);
+//     }
+//   }
 
-  // ==========================================================
-  // [5] 转 ROS 消息
-  // ==========================================================
-  grid_map::GridMapRosConverter::toMessage(out_map, message);
-  return true;
-}
+//   // ==========================================================
+//   // [5] 转 ROS 消息
+//   // ==========================================================
+//   grid_map::GridMapRosConverter::toMessage(out_map, message);
+//   return true;
+// }
 
 bool Mapping::buildGridMapFromViewpointCloud(grid_map_msgs::GridMap &message)
 {

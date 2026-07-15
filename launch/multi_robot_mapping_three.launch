@@ -1,0 +1,89 @@
+<?xml version="1.0"?>
+<launch>
+    <!-- Robot IDs and namespaces -->
+    <arg name="id0" default="0" />
+    <arg name="id1" default="1" />
+    <arg name="id2" default="2" />
+    <arg name="namespace_1" default="vehicle$(arg id0)" />
+    <arg name="namespace_2" default="vehicle$(arg id1)" />
+    <arg name="namespace_3" default="vehicle$(arg id2)" />
+
+    <!-- Default: start immediately without /start_exploration. -->
+    <arg name="wait_for_start" default="false" />
+    <arg name="start_topic" default="/start_exploration" />
+
+    <group ns="$(arg namespace_1)">
+        <node name="cloud_merger_and_accumulator"
+              pkg="obstacle_mapping"
+              type="cloud_merger_and_accumulator.py"
+              output="screen">
+            <param name="wait_for_start" value="$(arg wait_for_start)" />
+            <param name="start_topic" value="$(arg start_topic)" />
+            <param name="window_size" value="10" />
+            <param name="publish_every_n" value="5" />
+            <param name="voxel_leaf" value="0.1" />
+            <param name="prefer_intensity" value="true" />
+            <param name="terrain_map" value="terrain_map" />
+            <param name="terrain_map_ext" value="terrain_map_ext" />
+            <param name="registered_scan" value="registered_scan_filted" />
+            <param name="terrain_merged_out" value="terrain_map_merged" />
+            <param name="registered_scan_accum_out" value="registered_scan_accum_10" />
+            <param name="sync_slop" value="0.10" />
+            <param name="sync_queue" value="10" />
+        </node>
+
+        <include file="$(find obstacle_mapping)/launch/robot_mapping.launch">
+            <arg name="ns" value="$(arg namespace_1)" />
+        </include>
+    </group>
+
+    <group ns="$(arg namespace_2)">
+        <node name="cloud_merger_and_accumulator"
+              pkg="obstacle_mapping"
+              type="cloud_merger_and_accumulator.py"
+              output="screen">
+            <param name="wait_for_start" value="$(arg wait_for_start)" />
+            <param name="start_topic" value="$(arg start_topic)" />
+            <param name="window_size" value="10" />
+            <param name="publish_every_n" value="5" />
+            <param name="voxel_leaf" value="0.1" />
+            <param name="prefer_intensity" value="true" />
+            <param name="terrain_map" value="terrain_map" />
+            <param name="terrain_map_ext" value="terrain_map_ext" />
+            <param name="registered_scan" value="registered_scan_filted" />
+            <param name="terrain_merged_out" value="terrain_map_merged" />
+            <param name="registered_scan_accum_out" value="registered_scan_accum_10" />
+            <param name="sync_slop" value="0.10" />
+            <param name="sync_queue" value="10" />
+        </node>
+
+        <include file="$(find obstacle_mapping)/launch/robot_mapping.launch">
+            <arg name="ns" value="$(arg namespace_2)" />
+        </include>
+    </group>
+
+    <group ns="$(arg namespace_3)">
+        <node name="cloud_merger_and_accumulator"
+              pkg="obstacle_mapping"
+              type="cloud_merger_and_accumulator.py"
+              output="screen">
+            <param name="wait_for_start" value="$(arg wait_for_start)" />
+            <param name="start_topic" value="$(arg start_topic)" />
+            <param name="window_size" value="10" />
+            <param name="publish_every_n" value="5" />
+            <param name="voxel_leaf" value="0.1" />
+            <param name="prefer_intensity" value="true" />
+            <param name="terrain_map" value="terrain_map" />
+            <param name="terrain_map_ext" value="terrain_map_ext" />
+            <param name="registered_scan" value="registered_scan_filted" />
+            <param name="terrain_merged_out" value="terrain_map_merged" />
+            <param name="registered_scan_accum_out" value="registered_scan_accum_10" />
+            <param name="sync_slop" value="0.10" />
+            <param name="sync_queue" value="10" />
+        </node>
+
+        <include file="$(find obstacle_mapping)/launch/robot_mapping.launch">
+            <arg name="ns" value="$(arg namespace_3)" />
+        </include>
+    </group>
+</launch>
