@@ -6,7 +6,6 @@ Panels:
       Expanded:
         - /Status1
         - /RegisteredScan1/Autocompute Value Bounds1
-        - /GridMap1
         - /GridMap2
       Splitter Ratio: 0.5
     Tree Height: 591
@@ -178,7 +177,7 @@ Visualization Manager:
       Color: 200; 200; 200
       Color Layer: traversability_fine_wheeled
       Color Transformer: IntensityLayer
-      Enabled: true
+      Enabled: false
       Height Layer: traversability_fine_wheeled
       Height Transformer: Layer
       History Length: 1
@@ -192,15 +191,15 @@ Visualization Manager:
       Topic: /vehicle0/trav_map
       Unreliable: false
       Use Rainbow: false
-      Value: true
+      Value: false
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Class: grid_map_rviz_plugin/GridMap
       Color: 200; 200; 200
-      Color Layer: traversability_fine_tracked
+      Color Layer: traversability_fine_wheeled
       Color Transformer: IntensityLayer
       Enabled: true
-      Height Layer: traversability_fine_tracked
+      Height Layer: traversability_fine_wheeled
       Height Transformer: Layer
       History Length: 1
       Invert Rainbow: false
@@ -311,7 +310,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 92.30734252929688
+      Distance: 99.8855972290039
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -319,9 +318,9 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: 31.492223739624023
-        Y: 26.9544620513916
-        Z: -15.020593643188477
+        X: 23.072330474853516
+        Y: 28.63744354248047
+        Z: -15.018794059753418
       Focal Shape Fixed Size: false
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
@@ -329,7 +328,7 @@ Visualization Manager:
       Near Clip Distance: 0.009999999776482582
       Pitch: 1.5697963237762451
       Target Frame: vehicle0/vehicle
-      Yaw: 4.708593845367432
+      Yaw: 4.698592185974121
     Saved: ~
 Window Geometry:
   Displays:

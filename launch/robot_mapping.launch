@@ -1,4 +1,5 @@
 <?xml version="1.0"?>
+<!-- Complete launch configuration with package-local traversability CSV output. -->
 <launch>
     <arg name="ns" default="vehicle0" />
     <arg name="frame_id" default="map" />
@@ -21,7 +22,7 @@
     <arg name="startup_hole_max_cells" default="200" />
     <arg name="startup_hole_min_boundary_cells" default="12" />
     <arg name="startup_hole_max_attempts" default="30" />
-
+    
     <arg name="slope_threshold" default="0.3" />
     <arg name="roughness_threshold" default="0.04" />
     <arg name="step_threshold" default="0.4" />
@@ -54,6 +55,13 @@
     <arg name="fine_roughness_max" default="1.0" />
     <arg name="fine_roll_threshold_deg" default="30.0" />
     <arg name="fine_pitch_threshold_deg" default="30.0" />
+
+    <!-- Fine traversability diagnosis. The CSV is truncated at each launch. -->
+    <arg name="enable_fine_debug_csv" default="true" />
+    <arg name="fine_debug_csv_path"
+        default="$(find obstacle_mapping)/$(arg ns)_fine_traversability_debug.csv" />
+    <arg name="fine_debug_csv_append" default="false" />
+    <arg name="fine_debug_csv_max_cycles" default="50" />
 
     <arg name="skip_old_messages" default="false" />
 
@@ -101,7 +109,6 @@
             value="$(arg startup_hole_min_boundary_cells)" />
         <param name="startup_hole_max_attempts" value="$(arg startup_hole_max_attempts)" />
 
-
         <!-- Traversability thresholds -->
         <param name="slope_threshold" value="$(arg slope_threshold)" />
         <param name="roughness_threshold" value="$(arg roughness_threshold)" />
@@ -140,13 +147,18 @@
         <param name="fine_roll_threshold_deg" value="$(arg fine_roll_threshold_deg)" />
         <param name="fine_pitch_threshold_deg" value="$(arg fine_pitch_threshold_deg)" />
 
+        <!-- Per-cell and per-cycle fine traversability diagnostics -->
+        <param name="enable_fine_debug_csv" value="$(arg enable_fine_debug_csv)" />
+        <param name="fine_debug_csv_path" value="$(arg fine_debug_csv_path)" />
+        <param name="fine_debug_csv_append" value="$(arg fine_debug_csv_append)" />
+        <param name="fine_debug_csv_max_cycles" value="$(arg fine_debug_csv_max_cycles)" />
+
         <!-- Asynchronous processing parameters -->
         <param name="skip_old_messages" value="$(arg skip_old_messages)" />
 
         <!-- Persistent global explored map output -->
         <param name="global_gridmap_topic" value="$(arg global_gridmap_topic)" />
         <param name="global_publish_every_n" value="$(arg global_publish_every_n)" />
-
     </node>
 
     <!-- RViz visualization -->

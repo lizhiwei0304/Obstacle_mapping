@@ -1,6 +1,6 @@
 /**
  * @description: Multi-robot mapping node with conditional startup blind-spot completion
- * @filename: multi_robot_mapping.cpp
+ * @filename: multi_robot_mapping_with_csv.cpp
  * @author: wangxurui
  * @date: 2026-01-28
  **/
@@ -17,227 +17,225 @@
 #include <utility>
 #include <stdexcept>
 #include <cmath>
+#include <iomanip>
 
 namespace
 {
-enum class StartupHoleFillResult
-{
-  kNoHole,
-  kFilled,
-  kNotClosed,
-  kTooLarge,
-  kInsufficientBoundary,
-  kInvalidMap
-};
-
-/**
- * @brief Fill only a small, closed unknown component containing the initial
- *        vehicle position.
- *
- * The 16-beam lidar may leave a near-field blind spot around the starting
- * pose.  This function deliberately does not fill an arbitrary circle.  It
- * first performs an 8-connected flood fill on invalid elevation_BGK cells.
- * The component is accepted only when it is completely enclosed by valid
- * terrain, remains inside search_radius, is small enough, and has enough
- * valid boundary cells.  A plane fitted to the boundary is then used to fill
- * the missing elevation while n_points remains zero (the values are inferred,
- * not real lidar observations).
- */
-StartupHoleFillResult fillClosedStartupHole(
-    grid_map::GridMap &map,
-    const grid_map::Position &initial_position,
-    double search_radius,
-    std::size_t max_hole_cells,
-    std::size_t min_boundary_cells,
-    double recompute_radius,
-    std::size_t &filled_cell_count)
-{
-  filled_cell_count = 0;
-
-  if (!map.exists("elevation_BGK") ||
-      !map.exists("interpolated") ||
-      search_radius <= map.getResolution())
+  enum class StartupHoleFillResult
   {
-    return StartupHoleFillResult::kInvalidMap;
-  }
-
-  grid_map::Index seed;
-  if (!map.getIndex(initial_position, seed))
-  {
-    return StartupHoleFillResult::kInvalidMap;
-  }
-
-  auto &elevation_bgk = map["elevation_BGK"];
-  if (std::isfinite(elevation_bgk(seed(0), seed(1))))
-  {
-    // The initial position is already covered (typical for the 32-beam lidar).
-    return StartupHoleFillResult::kNoHole;
-  }
-
-  const grid_map::Size map_size = map.getSize();
-  const auto in_bounds = [&map_size](int row, int col)
-  {
-    return row >= 0 && col >= 0 &&
-           row < map_size(0) && col < map_size(1);
+    kNoHole,
+    kFilled,
+    kNotClosed,
+    kTooLarge,
+    kInsufficientBoundary,
+    kInvalidMap
   };
 
-  const std::array<std::pair<int, int>, 8> neighbors = {{
-      {-1, -1}, {-1, 0}, {-1, 1}, {0, -1},
-      {0, 1}, {1, -1}, {1, 0}, {1, 1}}};
-
-  std::queue<grid_map::Index> pending;
-  std::set<std::pair<int, int>> hole_cells;
-  std::set<std::pair<int, int>> boundary_cells;
-  pending.push(seed);
-  hole_cells.insert({seed(0), seed(1)});
-
-  bool touches_search_boundary = false;
-
-  while (!pending.empty())
+  /**
+   * @brief Fill only a small, closed unknown component containing the initial
+   *        vehicle position.
+   *
+   * The 16-beam lidar may leave a near-field blind spot around the starting
+   * pose.  This function deliberately does not fill an arbitrary circle.  It
+   * first performs an 8-connected flood fill on invalid elevation_BGK cells.
+   * The component is accepted only when it is completely enclosed by valid
+   * terrain, remains inside search_radius, is small enough, and has enough
+   * valid boundary cells.  A plane fitted to the boundary is then used to fill
+   * the missing elevation while n_points remains zero (the values are inferred,
+   * not real lidar observations).
+   */
+  StartupHoleFillResult fillClosedStartupHole(
+      grid_map::GridMap &map,
+      const grid_map::Position &initial_position,
+      double search_radius,
+      std::size_t max_hole_cells,
+      std::size_t min_boundary_cells,
+      double recompute_radius,
+      std::size_t &filled_cell_count)
   {
-    const grid_map::Index current = pending.front();
-    pending.pop();
+    filled_cell_count = 0;
 
-    for (const auto &offset : neighbors)
-    {
-      const int row = current(0) + offset.first;
-      const int col = current(1) + offset.second;
-
-      if (!in_bounds(row, col))
-      {
-        touches_search_boundary = true;
-        continue;
-      }
-
-      const grid_map::Index neighbor(row, col);
-      const float height = elevation_bgk(row, col);
-      if (std::isfinite(height))
-      {
-        boundary_cells.insert({row, col});
-        continue;
-      }
-
-      grid_map::Position position;
-      if (!map.getPosition(neighbor, position))
-      {
-        touches_search_boundary = true;
-        continue;
-      }
-
-      if ((position - initial_position).norm() > search_radius)
-      {
-        // The unknown component continues outside the protected startup area,
-        // so it is open/unexplored space rather than a closed lidar blind spot.
-        touches_search_boundary = true;
-        continue;
-      }
-
-      if (hole_cells.insert({row, col}).second)
-      {
-        if (hole_cells.size() > max_hole_cells)
-        {
-          return StartupHoleFillResult::kTooLarge;
-        }
-        pending.push(neighbor);
-      }
-    }
-  }
-
-  if (touches_search_boundary)
-  {
-    return StartupHoleFillResult::kNotClosed;
-  }
-
-  if (boundary_cells.size() < min_boundary_cells)
-  {
-    return StartupHoleFillResult::kInsufficientBoundary;
-  }
-
-  // Fit z = ax + by + c to the valid ring around the hole.  This preserves a
-  // local slope and is safer than assigning a constant traversability value.
-  Eigen::MatrixXd A(boundary_cells.size(), 3);
-  Eigen::VectorXd z(boundary_cells.size());
-  double min_boundary_z = std::numeric_limits<double>::infinity();
-  double max_boundary_z = -std::numeric_limits<double>::infinity();
-
-  Eigen::Index sample = 0;
-  for (const auto &cell : boundary_cells)
-  {
-    const grid_map::Index index(cell.first, cell.second);
-    grid_map::Position position;
-    if (!map.getPosition(index, position))
+    if (!map.exists("elevation_BGK") ||
+        !map.exists("interpolated") ||
+        search_radius <= map.getResolution())
     {
       return StartupHoleFillResult::kInvalidMap;
     }
 
-    const double height = elevation_bgk(cell.first, cell.second);
-    A.row(sample) << position.x(), position.y(), 1.0;
-    z(sample) = height;
-    min_boundary_z = std::min(min_boundary_z, height);
-    max_boundary_z = std::max(max_boundary_z, height);
-    ++sample;
-  }
-
-  const Eigen::Vector3d plane = A.colPivHouseholderQr().solve(z);
-  if (!plane.allFinite())
-  {
-    return StartupHoleFillResult::kInvalidMap;
-  }
-
-  auto &interpolated = map["interpolated"];
-  for (const auto &cell : hole_cells)
-  {
-    const grid_map::Index index(cell.first, cell.second);
-    grid_map::Position position;
-    if (!map.getPosition(index, position))
+    grid_map::Index seed;
+    if (!map.getIndex(initial_position, seed))
     {
-      continue;
+      return StartupHoleFillResult::kInvalidMap;
     }
 
-    double predicted_z = plane.x() * position.x() +
-                         plane.y() * position.y() + plane.z();
-    // Prevent a poorly conditioned fit from creating a peak or pit inside the
-    // repaired region.
-    predicted_z = std::max(min_boundary_z,
-                           std::min(max_boundary_z, predicted_z));
-
-    elevation_bgk(cell.first, cell.second) =
-        static_cast<float>(predicted_z);
-    interpolated(cell.first, cell.second) = 1.0f;
-    ++filled_cell_count;
-  }
-
-  // A repair can change the neighborhood used by slope/step computation.  If
-  // an earlier frame already evaluated nearby cells in incremental mode, mark
-  // them for recomputation in the current pipeline.
-  const std::array<const char *, 3> computed_layers = {{
-      "incremental_geom_computed",
-      "incremental_step_computed",
-      "incremental_trav_computed"}};
-
-  for (const auto &cell : hole_cells)
-  {
-    grid_map::Position position;
-    if (!map.getPosition(grid_map::Index(cell.first, cell.second), position))
+    auto &elevation_bgk = map["elevation_BGK"];
+    if (std::isfinite(elevation_bgk(seed(0), seed(1))))
     {
-      continue;
+      // The initial position is already covered (typical for the 32-beam lidar).
+      return StartupHoleFillResult::kNoHole;
     }
 
-    for (grid_map::CircleIterator it(map, position, recompute_radius);
-         !it.isPastEnd(); ++it)
+    const grid_map::Size map_size = map.getSize();
+    const auto in_bounds = [&map_size](int row, int col)
     {
-      for (const char *layer : computed_layers)
+      return row >= 0 && col >= 0 &&
+             row < map_size(0) && col < map_size(1);
+    };
+
+    const std::array<std::pair<int, int>, 8> neighbors = {{{-1, -1}, {-1, 0}, {-1, 1}, {0, -1}, {0, 1}, {1, -1}, {1, 0}, {1, 1}}};
+
+    std::queue<grid_map::Index> pending;
+    std::set<std::pair<int, int>> hole_cells;
+    std::set<std::pair<int, int>> boundary_cells;
+    pending.push(seed);
+    hole_cells.insert({seed(0), seed(1)});
+
+    bool touches_search_boundary = false;
+
+    while (!pending.empty())
+    {
+      const grid_map::Index current = pending.front();
+      pending.pop();
+
+      for (const auto &offset : neighbors)
       {
-        if (map.exists(layer))
+        const int row = current(0) + offset.first;
+        const int col = current(1) + offset.second;
+
+        if (!in_bounds(row, col))
         {
-          map.at(layer, *it) = 0.0f;
+          touches_search_boundary = true;
+          continue;
+        }
+
+        const grid_map::Index neighbor(row, col);
+        const float height = elevation_bgk(row, col);
+        if (std::isfinite(height))
+        {
+          boundary_cells.insert({row, col});
+          continue;
+        }
+
+        grid_map::Position position;
+        if (!map.getPosition(neighbor, position))
+        {
+          touches_search_boundary = true;
+          continue;
+        }
+
+        if ((position - initial_position).norm() > search_radius)
+        {
+          // The unknown component continues outside the protected startup area,
+          // so it is open/unexplored space rather than a closed lidar blind spot.
+          touches_search_boundary = true;
+          continue;
+        }
+
+        if (hole_cells.insert({row, col}).second)
+        {
+          if (hole_cells.size() > max_hole_cells)
+          {
+            return StartupHoleFillResult::kTooLarge;
+          }
+          pending.push(neighbor);
         }
       }
     }
-  }
 
-  return StartupHoleFillResult::kFilled;
-}
+    if (touches_search_boundary)
+    {
+      return StartupHoleFillResult::kNotClosed;
+    }
+
+    if (boundary_cells.size() < min_boundary_cells)
+    {
+      return StartupHoleFillResult::kInsufficientBoundary;
+    }
+
+    // Fit z = ax + by + c to the valid ring around the hole.  This preserves a
+    // local slope and is safer than assigning a constant traversability value.
+    Eigen::MatrixXd A(boundary_cells.size(), 3);
+    Eigen::VectorXd z(boundary_cells.size());
+    double min_boundary_z = std::numeric_limits<double>::infinity();
+    double max_boundary_z = -std::numeric_limits<double>::infinity();
+
+    Eigen::Index sample = 0;
+    for (const auto &cell : boundary_cells)
+    {
+      const grid_map::Index index(cell.first, cell.second);
+      grid_map::Position position;
+      if (!map.getPosition(index, position))
+      {
+        return StartupHoleFillResult::kInvalidMap;
+      }
+
+      const double height = elevation_bgk(cell.first, cell.second);
+      A.row(sample) << position.x(), position.y(), 1.0;
+      z(sample) = height;
+      min_boundary_z = std::min(min_boundary_z, height);
+      max_boundary_z = std::max(max_boundary_z, height);
+      ++sample;
+    }
+
+    const Eigen::Vector3d plane = A.colPivHouseholderQr().solve(z);
+    if (!plane.allFinite())
+    {
+      return StartupHoleFillResult::kInvalidMap;
+    }
+
+    auto &interpolated = map["interpolated"];
+    for (const auto &cell : hole_cells)
+    {
+      const grid_map::Index index(cell.first, cell.second);
+      grid_map::Position position;
+      if (!map.getPosition(index, position))
+      {
+        continue;
+      }
+
+      double predicted_z = plane.x() * position.x() +
+                           plane.y() * position.y() + plane.z();
+      // Prevent a poorly conditioned fit from creating a peak or pit inside the
+      // repaired region.
+      predicted_z = std::max(min_boundary_z,
+                             std::min(max_boundary_z, predicted_z));
+
+      elevation_bgk(cell.first, cell.second) =
+          static_cast<float>(predicted_z);
+      interpolated(cell.first, cell.second) = 1.0f;
+      ++filled_cell_count;
+    }
+
+    // A repair can change the neighborhood used by slope/step computation.  If
+    // an earlier frame already evaluated nearby cells in incremental mode, mark
+    // them for recomputation in the current pipeline.
+    const std::array<const char *, 3> computed_layers = {{"incremental_geom_computed",
+                                                          "incremental_step_computed",
+                                                          "incremental_trav_computed"}};
+
+    for (const auto &cell : hole_cells)
+    {
+      grid_map::Position position;
+      if (!map.getPosition(grid_map::Index(cell.first, cell.second), position))
+      {
+        continue;
+      }
+
+      for (grid_map::CircleIterator it(map, position, recompute_radius);
+           !it.isPastEnd(); ++it)
+      {
+        for (const char *layer : computed_layers)
+        {
+          if (map.exists(layer))
+          {
+            map.at(layer, *it) = 0.0f;
+          }
+        }
+      }
+    }
+
+    return StartupHoleFillResult::kFilled;
+  }
 } // namespace
 
 #ifndef MULTI_ROBOT_MAPPING_NO_MAIN
@@ -2090,7 +2088,11 @@ void Mapping::finegrained_traversability_mapping()
   // -----------------------------------------------------
   auto &traversability = height_map_["traversability"]; // 粗粒度 traversability（0~1）
   auto &slope_layer = height_map_["slope"];             // 坡度层（通常是归一化后的）
-  auto &critical_layer = height_map_["critical"];       // 标记层：哪些 cell 做了 fine 检查
+  auto &roughness_layer = height_map_["roughness"];
+  auto &step_layer = height_map_["step"];
+  auto &n_points_layer = height_map_["n_points"];
+  auto &interpolated_layer = height_map_["interpolated"];
+  auto &critical_layer = height_map_["critical"]; // 标记层：哪些 cell 做了 fine 检查
 
   // =====================================================
   // [2] 定义一个“车辆评估上下文”，用同一套循环处理多个车型
@@ -2154,6 +2156,114 @@ void Mapping::finegrained_traversability_mapping()
   }
 
   // =====================================================
+  // [3.5] Fine traversability diagnostic CSV
+  // =====================================================
+  // This diagnostic records the exact branch and values that make the two
+  // vehicle layers diverge.  It does not alter any mapping result.
+  static bool csv_configured = false;
+  static bool csv_enabled = true;
+  static bool csv_append = false;
+  static int csv_max_cycles = 50;
+  static std::string csv_path;
+  static std::ofstream csv_stream;
+  static std::size_t csv_cycle = 0;
+
+  if (!csv_configured)
+  {
+    pnh_.param<bool>("enable_fine_debug_csv", csv_enabled, true);
+    pnh_.param<bool>("fine_debug_csv_append", csv_append, false);
+    pnh_.param<int>("fine_debug_csv_max_cycles", csv_max_cycles, 50);
+    const std::string package_path =
+        ros::package::getPath("obstacle_mapping");
+    const std::string default_csv_path =
+        package_path + "/fine_traversability_debug.csv";
+    pnh_.param<std::string>("fine_debug_csv_path", csv_path,
+                            default_csv_path);
+    if (csv_path.empty())
+    {
+      csv_path = default_csv_path;
+    }
+    csv_max_cycles = std::max(1, csv_max_cycles);
+
+    if (csv_enabled)
+    {
+      bool write_header = true;
+      if (csv_append)
+      {
+        std::ifstream existing(csv_path);
+        write_header = !existing.good() || existing.peek() == std::ifstream::traits_type::eof();
+      }
+
+      const std::ios_base::openmode mode =
+          std::ios::out | (csv_append ? std::ios::app : std::ios::trunc);
+      csv_stream.open(csv_path, mode);
+
+      if (!csv_stream.is_open())
+      {
+        ROS_ERROR("Failed to open fine traversability diagnostic CSV: %s",
+                  csv_path.c_str());
+        csv_enabled = false;
+      }
+      else
+      {
+        if (write_header)
+        {
+          csv_stream
+              << "record_type,stamp_sec,cycle,vehicle_id,vehicle,"
+              << "cell_x,cell_y,slope,roughness,step,coarse_cost,"
+              << "n_points,interpolated,pose_status,status,roll_deg,"
+              << "pitch_deg,contact_points,stable,final_cost,"
+              << "success_count,collision_count,failure_count,skipped_cells\n";
+        }
+        csv_stream << std::setprecision(9);
+        ROS_INFO("Fine traversability diagnostic CSV: %s (max_cycles=%d)",
+                 csv_path.c_str(), csv_max_cycles);
+      }
+    }
+
+    csv_configured = true;
+  }
+
+  ++csv_cycle;
+  const bool record_this_cycle =
+      csv_enabled && csv_stream.is_open() &&
+      csv_cycle <= static_cast<std::size_t>(csv_max_cycles);
+  const double csv_stamp = ros::Time::now().toSec();
+
+  auto writeCellRecord = [&](const VehicleEvalContext &vehicle,
+                             const grid_map::Position &position,
+                             float slope_value,
+                             float roughness_value,
+                             float step_value,
+                             float coarse_value,
+                             float n_points_value,
+                             float interpolated_value,
+                             int pose_status,
+                             const char *status,
+                             double roll_deg,
+                             double pitch_deg,
+                             int contact_points,
+                             int stable,
+                             float final_cost)
+  {
+    if (!record_this_cycle)
+    {
+      return;
+    }
+
+    csv_stream << "cell," << csv_stamp << ',' << csv_cycle << ','
+               << vehicle.id << ',' << vehicle.name << ','
+               << position.x() << ',' << position.y() << ','
+               << slope_value << ',' << roughness_value << ','
+               << step_value << ',' << coarse_value << ','
+               << n_points_value << ',' << interpolated_value << ','
+               << pose_status << ',' << status << ','
+               << roll_deg << ',' << pitch_deg << ','
+               << contact_points << ',' << stable << ','
+               << final_cost << ",,,,\n";
+  };
+
+  // =====================================================
   // [4] 获取车辆当前位姿快照（位置 + 朝向），用于确定评估区域和 yaw
   // =====================================================
   Eigen::Vector3d current_pos;
@@ -2214,6 +2324,11 @@ void Mapping::finegrained_traversability_mapping()
       continue;
     }
 
+    const float roughness_val = roughness_layer(idx(0), idx(1));
+    const float step_val = step_layer(idx(0), idx(1));
+    const float n_points_val = n_points_layer(idx(0), idx(1));
+    const float interpolated_val = interpolated_layer(idx(0), idx(1));
+
     // 标记该 cell 被纳入了 fine 检查（critical=1）
     critical_layer(idx(0), idx(1)) = 1.0f;
 
@@ -2245,6 +2360,10 @@ void Mapping::finegrained_traversability_mapping()
       {
         vehicle.count_collision++;
         (*(vehicle.layer))(idx(0), idx(1)) = 1.0f;
+        writeCellRecord(vehicle, pos, slope_val, roughness_val, step_val,
+                        coarse_value, n_points_val, interpolated_val,
+                        pose_status, "collision", roll, pitch,
+                        contact_points, is_stable, 1.0f);
         continue;
       }
 
@@ -2252,6 +2371,10 @@ void Mapping::finegrained_traversability_mapping()
       if (pose_status != 2)
       {
         vehicle.count_failure++;
+        writeCellRecord(vehicle, pos, slope_val, roughness_val, step_val,
+                        coarse_value, n_points_val, interpolated_val,
+                        pose_status, "failure_keep_coarse", roll, pitch,
+                        contact_points, is_stable, coarse_value);
         continue;
       }
 
@@ -2281,6 +2404,12 @@ void Mapping::finegrained_traversability_mapping()
 
       // 精细校核成功后，直接覆盖该车型对应的粗粒度默认值。
       (*(vehicle.layer))(idx(0), idx(1)) = fine_traversability;
+      writeCellRecord(vehicle, pos, slope_val, roughness_val, step_val,
+                      coarse_value, n_points_val, interpolated_val,
+                      pose_status,
+                      is_stable == 0 ? "success_unstable" : "success",
+                      roll, pitch, contact_points, is_stable,
+                      fine_traversability);
     }
   }
 
@@ -2293,6 +2422,31 @@ void Mapping::finegrained_traversability_mapping()
   {
     ROS_INFO("  - %s => success: %d, collision: %d, failure: %d",
              vehicle.name.c_str(), vehicle.count_success, vehicle.count_collision, vehicle.count_failure);
+
+    if (record_this_cycle)
+    {
+      csv_stream << "summary," << csv_stamp << ',' << csv_cycle << ','
+                 << vehicle.id << ',' << vehicle.name;
+      // Fields 6--20 are cell-level values and are not applicable here.
+      for (int field = 6; field <= 20; ++field)
+      {
+        csv_stream << ",nan";
+      }
+      csv_stream << ',' << vehicle.count_success
+                 << ',' << vehicle.count_collision
+                 << ',' << vehicle.count_failure
+                 << ',' << count_skipped << '\n';
+    }
+  }
+
+  if (record_this_cycle)
+  {
+    csv_stream.flush();
+    if (csv_cycle == static_cast<std::size_t>(csv_max_cycles))
+    {
+      ROS_INFO("Fine traversability diagnostic CSV reached %d cycles: %s",
+               csv_max_cycles, csv_path.c_str());
+    }
   }
 }
 
@@ -2839,60 +2993,102 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx, double &roll, d
 }
 
 // ==================== Plane Fitting ====================
+// bool Mapping::checkWheel(int vehicle_type, int i, int j) const
+// {
+//   // 说明：i/j 是车辆模型离散网格的行列索引（从 0 开始）
+//   // 该函数用于区分“允许接触地面的区域(轮/履带)” 和 “不该接触的区域(底盘/车体)”
+
+//   if (vehicle_type == 1)
+//   {
+//     // -------------------------
+//     // 车型 1：轮式车
+//     // -------------------------
+//     // wheel_rows / wheel_cols 描述轮子接触斑块所在的行/列集合
+//     // 注意：这里只是“离散网格上的近似轮子区域”，不是连续几何
+
+//     static const std::array<int, 4> wheel_rows = {0, 1, 7, 8};    // 轮子所在的行范围（前后两排）
+//     static const std::array<int, 5> wheel_cols = {1, 2, 3, 8, 9}; // 轮子所在的列范围（左右两侧）
+
+//     // row_matches: i 是否落在轮子行集合
+//     bool row_matches = std::find(wheel_rows.begin(), wheel_rows.end(), i) != wheel_rows.end();
+
+//     // col_matches: j 是否落在轮子列集合
+//     bool col_matches = std::find(wheel_cols.begin(), wheel_cols.end(), j) != wheel_cols.end();
+
+//     if (row_matches && col_matches)
+//     {
+//       // (i,j) 同时落在轮子行集合 & 轮子列集合 → 认为这是“轮子接触区域”
+//       // 返回 false：表示“这是允许接触的点”，不要用它做 collision 判定
+//       return false;
+//     }
+
+//     // 其它位置：认为属于底盘/车体区域（不应该穿透/接触）
+//     // 返回 true：表示“这是敏感点”，如果 gap 很小/为负 → 判 collision
+//     return true;
+//   }
+
+//   if (vehicle_type == 2)
+//   {
+//     // -------------------------
+//     // 车型 2：履带车
+//     // -------------------------
+//     // 这里用 “列集合” 表示履带接触面（例如左右两条履带所在的列带）
+//     static const std::array<int, 4> wheel_cols = {0, 1, 7, 8};
+
+//     bool col_matches = std::find(wheel_cols.begin(), wheel_cols.end(), j) != wheel_cols.end();
+//     if (col_matches)
+//     {
+//       // 落在履带接触列 → 允许接触 → 返回 false（不作为 collision 敏感点）
+//       return false;
+//     }
+
+//     // 中间区域：视为车体/底盘 → 返回 true（敏感点）
+//     return true;
+//   }
+
+//   // 其它 vehicle_type：兜底当作底盘敏感点（一般不应该走到这）
+//   return true;
+// }
+
 bool Mapping::checkWheel(int vehicle_type, int i, int j) const
 {
-  // 说明：i/j 是车辆模型离散网格的行列索引（从 0 开始）
-  // 该函数用于区分“允许接触地面的区域(轮/履带)” 和 “不该接触的区域(底盘/车体)”
+  // false：车轮/履带接触区域
+  // true：底盘区域，需要检查碰撞
 
   if (vehicle_type == 1)
   {
-    // -------------------------
-    // 车型 1：轮式车
-    // -------------------------
-    // wheel_rows / wheel_cols 描述轮子接触斑块所在的行/列集合
-    // 注意：这里只是“离散网格上的近似轮子区域”，不是连续几何
+    static const std::array<int, 4> wheel_rows = {
+        0, 1, 7, 8};
 
-    static const std::array<int, 4> wheel_rows = {0, 1, 7, 8};    // 轮子所在的行范围（前后两排）
-    static const std::array<int, 5> wheel_cols = {1, 2, 3, 8, 9}; // 轮子所在的列范围（左右两侧）
+    static const std::array<int, 5> wheel_cols = {
+        1, 2, 3, 8, 9};
 
-    // row_matches: i 是否落在轮子行集合
-    bool row_matches = std::find(wheel_rows.begin(), wheel_rows.end(), i) != wheel_rows.end();
+    const bool row_matches =
+        std::find(wheel_rows.begin(),
+                  wheel_rows.end(),
+                  i) != wheel_rows.end();
 
-    // col_matches: j 是否落在轮子列集合
-    bool col_matches = std::find(wheel_cols.begin(), wheel_cols.end(), j) != wheel_cols.end();
+    const bool col_matches =
+        std::find(wheel_cols.begin(),
+                  wheel_cols.end(),
+                  j) != wheel_cols.end();
 
-    if (row_matches && col_matches)
-    {
-      // (i,j) 同时落在轮子行集合 & 轮子列集合 → 认为这是“轮子接触区域”
-      // 返回 false：表示“这是允许接触的点”，不要用它做 collision 判定
-      return false;
-    }
-
-    // 其它位置：认为属于底盘/车体区域（不应该穿透/接触）
-    // 返回 true：表示“这是敏感点”，如果 gap 很小/为负 → 判 collision
-    return true;
+    return !(row_matches && col_matches);
   }
 
   if (vehicle_type == 2)
   {
-    // -------------------------
-    // 车型 2：履带车
-    // -------------------------
-    // 这里用 “列集合” 表示履带接触面（例如左右两条履带所在的列带）
-    static const std::array<int, 4> wheel_cols = {0, 1, 7, 8};
+    static const std::array<int, 4> track_rows = {
+        0, 1, 7, 8};
 
-    bool col_matches = std::find(wheel_cols.begin(), wheel_cols.end(), j) != wheel_cols.end();
-    if (col_matches)
-    {
-      // 落在履带接触列 → 允许接触 → 返回 false（不作为 collision 敏感点）
-      return false;
-    }
+    const bool is_track =
+        std::find(track_rows.begin(),
+                  track_rows.end(),
+                  i) != track_rows.end();
 
-    // 中间区域：视为车体/底盘 → 返回 true（敏感点）
-    return true;
+    return !is_track;
   }
 
-  // 其它 vehicle_type：兜底当作底盘敏感点（一般不应该走到这）
   return true;
 }
 
@@ -3138,7 +3334,7 @@ void Mapping::publishGridMap()
 
   grid_map_msgs::GridMap global_message;
   grid_map::GridMapRosConverter::toMessage(global_explored_map,
-                                            global_message);
+                                           global_message);
   global_gridmap_pub.publish(global_message);
 
   ROS_INFO_THROTTLE(2.0,
