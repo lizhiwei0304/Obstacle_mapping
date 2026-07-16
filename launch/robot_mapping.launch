@@ -49,6 +49,11 @@
 
     <arg name="skip_old_messages" default="false" />
 
+    <!-- Global explored grid map publication. The underlying 1000 m x 1000 m
+         map is always retained; this controls the low-rate global ROS topic. -->
+    <arg name="global_gridmap_topic" default="global_trav_map" />
+    <arg name="global_publish_every_n" default="10" />
+
 
     <node name="multi_robot_mapping_node" pkg="obstacle_mapping" type="multi_robot_mapping_node"
         output="screen">
@@ -120,6 +125,11 @@
 
         <!-- Asynchronous processing parameters -->
         <param name="skip_old_messages" value="$(arg skip_old_messages)" />
+
+        <!-- Persistent global explored map output -->
+        <param name="global_gridmap_topic" value="$(arg global_gridmap_topic)" />
+        <param name="global_publish_every_n" value="$(arg global_publish_every_n)" />
+
     </node>
 
     <!-- RViz visualization -->

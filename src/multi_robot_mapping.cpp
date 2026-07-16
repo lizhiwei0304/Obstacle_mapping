@@ -1778,10 +1778,6 @@ void Mapping::finegrained_traversability_mapping()
   auto &slope_layer = height_map_["slope"];             // 坡度层（通常是归一化后的）
   auto &critical_layer = height_map_["critical"];       // 标记层：哪些 cell 做了 fine 检查
 
-  // 每次重新计算 fine 时，把 critical 全图清零
-  // 这一步是 O(地图总cell数) 的，会比较贵（后面我会说如何优化）
-  critical_layer.setConstant(0.0f);
-
   // =====================================================
   // [2] 定义一个“车辆评估上下文”，用同一套循环处理多个车型
   // =====================================================
@@ -1827,10 +1823,6 @@ void Mapping::finegrained_traversability_mapping()
 
     // 注意：这里把 layer 的矩阵指针保存下来，后面直接写矩阵
     ctx.layer = &height_map_[layer_name];
-
-    // 初始化：先把 coarse traversability 拷贝到 fine layer
-    // 这是一整张矩阵的拷贝，成本 O(全图 cell 数)
-    *(ctx.layer) = traversability;
 
     ctx.name = name;
     vehicles.push_back(std::move(ctx));
@@ -1879,6 +1871,15 @@ void Mapping::finegrained_traversability_mapping()
        !it.isPastEnd(); ++it)
   {
     grid_map::Index idx = *it;
+
+    // 当前处理范围先以粗粒度结果作为默认值。只更新当前范围，避免
+    // 整图复制覆盖车辆此前已经完成的历史精细校核结果。
+    const float coarse_value = traversability(idx(0), idx(1));
+    for (auto &vehicle : vehicles)
+    {
+      (*(vehicle.layer))(idx(0), idx(1)) = coarse_value;
+    }
+    critical_layer(idx(0), idx(1)) = 0.0f;
 
     // ---------------------------------------------------
     // [6.1] slope 过滤：只对“足够陡/值得细算”的区域评估
@@ -1964,7 +1965,7 @@ void Mapping::finegrained_traversability_mapping()
         fine_traversability = 1.0f;
       }
 
-      // 写回该车型对应的 fine 层
+      // 精细校核成功后，直接覆盖该车型对应的粗粒度默认值。
       (*(vehicle.layer))(idx(0), idx(1)) = fine_traversability;
     }
   }
@@ -2654,13 +2655,183 @@ Eigen::Vector3d Mapping::fitPlane(const std::vector<Eigen::Vector3d> &points)
 // ==================== Grid Map Publishing ====================
 void Mapping::publishGridMap()
 {
+  // Keep the original robot-centred local map output.  This topic is intended
+  // for consumers that need a small, frequently updated map.
   grid_map_msgs::GridMap message;
-  if (!buildGridMapMessage(message))
+  if (buildGridMapMessage(message))
   // if (!buildGridMapFromViewpointCloud(message))
+  {
+    gridmap_pub_.publish(message);
+  }
+
+  // -----------------------------------------------------------------------
+  // Global explored map output
+  // -----------------------------------------------------------------------
+  // height_map_ is already the persistent global map.  Do not allocate and
+  // maintain a second 1000 m x 1000 m map here: that would duplicate all
+  // layers and consume a very large amount of memory.  Instead, publish a
+  // submap whose bounding box contains every cell that has ever received a
+  // real point observation (n_points > 0).  Cells inside the bounding box that
+  // have not been observed remain NaN/unknown.
+  //
+  // The publisher is latched so a newly started RViz/planner immediately gets
+  // the latest global explored map.  Publishing is deliberately decimated
+  // because a global GridMap message can be much larger than the local map.
+  static ros::Publisher global_gridmap_pub;
+  static bool global_publisher_initialized = false;
+  static int global_publish_every_n = 10;
+  static int global_publish_counter = 0;
+
+  if (!global_publisher_initialized)
+  {
+    std::string global_gridmap_topic;
+    pnh_.param<std::string>("global_gridmap_topic",
+                            global_gridmap_topic,
+                            "global_trav_map");
+    pnh_.param<int>("global_publish_every_n",
+                    global_publish_every_n,
+                    10);
+    global_publish_every_n = std::max(1, global_publish_every_n);
+
+    global_gridmap_pub = nh_.advertise<grid_map_msgs::GridMap>(
+        global_gridmap_topic, 1, true);
+    global_publisher_initialized = true;
+
+    ROS_INFO("Global explored grid map will be published on %s every %d local publications",
+             global_gridmap_pub.getTopic().c_str(),
+             global_publish_every_n);
+  }
+
+  ++global_publish_counter;
+  if (global_publish_counter < global_publish_every_n)
   {
     return;
   }
-  gridmap_pub_.publish(message);
+  global_publish_counter = 0;
+
+  grid_map::GridMap global_explored_map;
+  std::size_t observed_cell_count = 0;
+
+  {
+    std::lock_guard<std::mutex> lock(gridmap_publish_mutex_);
+
+    if (!height_map_.exists("n_points"))
+    {
+      ROS_WARN_THROTTLE(2.0,
+                        "Cannot build global explored map: n_points layer is missing.");
+      return;
+    }
+
+    const auto &observed = height_map_["n_points"];
+    double min_x = std::numeric_limits<double>::infinity();
+    double min_y = std::numeric_limits<double>::infinity();
+    double max_x = -std::numeric_limits<double>::infinity();
+    double max_y = -std::numeric_limits<double>::infinity();
+
+    // height_map_ has fixed geometry and is never moved, therefore its matrix
+    // indices can be converted directly to map positions.
+    for (Eigen::Index row = 0; row < observed.rows(); ++row)
+    {
+      for (Eigen::Index col = 0; col < observed.cols(); ++col)
+      {
+        const float n = observed(row, col);
+        if (!std::isfinite(n) || n <= 0.0f)
+        {
+          continue;
+        }
+
+        grid_map::Position position;
+        const grid_map::Index index(static_cast<int>(row),
+                                    static_cast<int>(col));
+        if (!height_map_.getPosition(index, position))
+        {
+          continue;
+        }
+
+        min_x = std::min(min_x, position.x());
+        min_y = std::min(min_y, position.y());
+        max_x = std::max(max_x, position.x());
+        max_y = std::max(max_y, position.y());
+        ++observed_cell_count;
+      }
+    }
+
+    if (observed_cell_count == 0)
+    {
+      ROS_WARN_THROTTLE(2.0,
+                        "No observed cells yet; skip global grid map publication.");
+      return;
+    }
+
+    // Add one-cell padding and clamp the requested submap to the fixed global
+    // map boundary.
+    const grid_map::Position map_center = height_map_.getPosition();
+    const grid_map::Length map_length = height_map_.getLength();
+    const double resolution = height_map_.getResolution();
+    const double map_min_x = map_center.x() - 0.5 * map_length.x();
+    const double map_min_y = map_center.y() - 0.5 * map_length.y();
+    const double map_max_x = map_center.x() + 0.5 * map_length.x();
+    const double map_max_y = map_center.y() + 0.5 * map_length.y();
+
+    min_x = std::max(map_min_x, min_x - resolution);
+    min_y = std::max(map_min_y, min_y - resolution);
+    max_x = std::min(map_max_x, max_x + resolution);
+    max_y = std::min(map_max_y, max_y + resolution);
+
+    const double length_x = std::max(resolution, max_x - min_x);
+    const double length_y = std::max(resolution, max_y - min_y);
+    const grid_map::Position submap_center(min_x + 0.5 * length_x,
+                                           min_y + 0.5 * length_y);
+    const grid_map::Length submap_length(length_x, length_y);
+
+    bool success = false;
+    global_explored_map = height_map_.getSubmap(
+        submap_center, submap_length, success);
+    if (!success)
+    {
+      ROS_WARN_THROTTLE(2.0,
+                        "Failed to crop the global explored grid map.");
+      return;
+    }
+  }
+
+  // Publish only externally useful layers.  Internal statistics and
+  // incremental-computation flags remain stored in height_map_ but are not
+  // serialized into the large ROS message.
+  static const std::vector<std::string> global_layers_to_publish = {
+      "elevation",
+      "elevation_BGK",
+      "slope",
+      "roughness",
+      "step",
+      "traversability",
+      "traversability_fine_wheeled",
+      "traversability_fine_tracked",
+      "critical"};
+
+  const auto global_existing_layers = global_explored_map.getLayers();
+  for (const auto &layer : global_existing_layers)
+  {
+    if (std::find(global_layers_to_publish.begin(),
+                  global_layers_to_publish.end(),
+                  layer) == global_layers_to_publish.end())
+    {
+      global_explored_map.erase(layer);
+    }
+  }
+
+  global_explored_map.setTimestamp(ros::Time::now().toNSec());
+
+  grid_map_msgs::GridMap global_message;
+  grid_map::GridMapRosConverter::toMessage(global_explored_map,
+                                            global_message);
+  global_gridmap_pub.publish(global_message);
+
+  ROS_INFO_THROTTLE(2.0,
+                    "Published global explored grid map: %.1f x %.1f m, %zu observed cells",
+                    global_explored_map.getLength().x(),
+                    global_explored_map.getLength().y(),
+                    observed_cell_count);
 }
 
 bool Mapping::buildGridMapMessage(grid_map_msgs::GridMap &message)
