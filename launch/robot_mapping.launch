@@ -45,7 +45,7 @@
     <arg name="fine_min_support_points" default="3" />
     <arg name="fine_max_rotation_step_deg" default="5.0" />
     <arg name="fine_max_pose_tilt_deg" default="60.0" />
-    <arg name="fine_heading_samples" default="8" />
+    <arg name="fine_heading_samples" default="4" />
 
     <arg name="enable_fine_traversability" default="true" />
     <arg name="enable_incremental_geom" default="true" />

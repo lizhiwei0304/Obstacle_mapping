@@ -1040,23 +1040,26 @@ void Mapping::processPointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud
   time2 = ros::Time::now().toSec();
   ROS_INFO("BGK mapping: %.4f seconds", time2 - time1);
 
-  // -----------------------
+  // -------------------------------------------------------------------------
   // 步骤 2.5：条件性启动盲区补全
-  // -----------------------
+  // -------------------------------------------------------------------------
   // 稀疏激光雷达可能会在初始位姿周围留下一个封闭的未知区域（连通域）。
   // 检测并仅填充该区域。如果初始栅格（cell）已经是有效值，
   // 或者未知区域是开放的/范围过大，则不进行任何处理。
-  static bool startup_fill_configured = false;
-  static bool startup_fill_enabled = true;
-  static bool startup_position_recorded = false;
-  static bool startup_fill_finished = false;
-  static grid_map::Position startup_position;
-  static double startup_hole_radius = 3.0;
-  static int startup_hole_max_cells = 200;
-  static int startup_hole_min_boundary_cells = 12;
-  static int startup_hole_max_attempts = 30;
-  static int startup_hole_attempts = 0;
 
+  // 静态状态变量，用于在多次回调中保持状态
+  static bool startup_fill_configured = false;     // 参数是否已初始化配置
+  static bool startup_fill_enabled = true;         // 是否启用启动盲区填充
+  static bool startup_position_recorded = false;   // 是否已记录初始位置
+  static bool startup_fill_finished = false;       // 盲区填充流程是否已结束（成功或放弃）
+  static grid_map::Position startup_position;      // 记录的初始位置坐标
+  static double startup_hole_radius = 3.0;         // 允许盲区空洞的最大半径（单位：米）
+  static int startup_hole_max_cells = 200;         // 允许盲区空洞的最大栅格数量（限制填充规模）
+  static int startup_hole_min_boundary_cells = 12; // 盲区边界所需的最少有效栅格数（用于确认封闭性）
+  static int startup_hole_max_attempts = 30;       // 放弃检测前的最大尝试次数（通常等待地图初始化完成）
+  static int startup_hole_attempts = 0;            // 当前已尝试的次数
+
+  // 1. 初始化配置：仅在首次运行时从 ROS 参数服务器加载参数
   if (!startup_fill_configured)
   {
     pnh_.param<bool>("enable_startup_hole_fill",
@@ -1070,6 +1073,7 @@ void Mapping::processPointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud
     pnh_.param<int>("startup_hole_max_attempts",
                     startup_hole_max_attempts, 30);
 
+    // 参数安全性限制，防止参数设置不合理导致计算异常
     startup_hole_radius = std::max(map_resolution_ * 2.0,
                                    startup_hole_radius);
     startup_hole_max_cells = std::max(1, startup_hole_max_cells);
@@ -1078,6 +1082,7 @@ void Mapping::processPointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud
     startup_hole_max_attempts = std::max(1, startup_hole_max_attempts);
     startup_fill_configured = true;
 
+    // 输出初始化配置日志
     ROS_INFO("Startup hole filling: %s, radius=%.2f m, max_cells=%d, min_boundary=%d, max_attempts=%d",
              startup_fill_enabled ? "enabled" : "disabled",
              startup_hole_radius,
@@ -1086,8 +1091,10 @@ void Mapping::processPointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud
              startup_hole_max_attempts);
   }
 
+  // 2. 执行盲区填充逻辑
   if (startup_fill_enabled && !startup_fill_finished)
   {
+    // 首次进入时，记录机器人初始的 2D 位置
     if (!startup_position_recorded)
     {
       startup_position = grid_map::Position(current_pos.x(), current_pos.y());
@@ -1096,6 +1103,8 @@ void Mapping::processPointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud
 
     std::size_t filled_cells = 0;
     StartupHoleFillResult fill_result;
+
+    // 线程安全锁：执行盲区搜索与填充算法
     {
       std::lock_guard<std::mutex> lock(gridmap_publish_mutex_);
       fill_result = fillClosedStartupHole(
@@ -1108,25 +1117,28 @@ void Mapping::processPointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud
           filled_cells);
     }
 
+    // 3. 处理算法返回结果
     if (fill_result == StartupHoleFillResult::kFilled)
     {
+      // 成功找到并填充了封闭的盲区
       startup_fill_finished = true;
       ROS_INFO("Filled closed startup lidar blind spot: %zu cells", filled_cells);
     }
     else if (fill_result == StartupHoleFillResult::kNoHole)
     {
-      // No startup hole exists, so leave the map unchanged and stop checking.
+      // 初始位置已经是有效栅格（无盲区存在），无需处理，结束流程
       startup_fill_finished = true;
       ROS_INFO("No startup lidar blind spot detected; no completion applied");
     }
     else
     {
+      // 填充失败（盲区未闭合、范围超限或地图尚未加载完整），累加尝试次数
       ++startup_hole_attempts;
       if (startup_hole_attempts >= startup_hole_max_attempts)
       {
+        // 达到最大尝试上限，判定此区域无法安全填充，放弃并保持其未知状态
         startup_fill_finished = true;
-        ROS_WARN("Startup hole was not a safe closed component after %d attempts; leaving it unknown",
-                 startup_hole_attempts);
+        ROS_WARN("Startup hole was not a safe closed component after %d attempts; leaving it unknown", startup_hole_attempts);
       }
     }
   }
@@ -2160,27 +2172,31 @@ void Mapping::finegrained_traversability_mapping()
   }
 
   // =====================================================
-  // [3.5] Fine traversability diagnostic CSV
+  // [3.5] 精细通过性诊断 CSV 记录
   // =====================================================
-  // This diagnostic records the exact branch and values that make the two
-  // vehicle layers diverge.  It does not alter any mapping result.
-  static bool csv_configured = false;
-  static bool csv_enabled = true;
-  static bool csv_append = false;
-  static int csv_max_cycles = 50;
-  static std::string csv_path;
-  static std::ofstream csv_stream;
-  static std::size_t csv_cycle = 0;
+  // 此诊断逻辑用于记录导致两种车辆图层结果分歧（Diverge）的确切计算分支和数值。
+  // 它属于纯诊断工具，不会修改任何建图或评估结果。
+  static bool csv_configured = false; // CSV 参数与文件流是否已初始化配置
+  static bool csv_enabled = true;     // 是否启用 CSV 诊断记录功能
+  static bool csv_append = false;     // 是否以追加（Append）模式写入文件
+  static int csv_max_cycles = 50;     // 允许记录的最大循环周期数（避免文件过大）
+  static std::string csv_path;        // CSV 文件保存路径
+  static std::ofstream csv_stream;    // CSV 文件输出流
+  static std::size_t csv_cycle = 0;   // 当前已运行的循环周期计数
 
+  // 1. 初始化配置：仅在首次运行时配置 CSV 文件
   if (!csv_configured)
   {
     pnh_.param<bool>("enable_fine_debug_csv", csv_enabled, true);
     pnh_.param<bool>("fine_debug_csv_append", csv_append, false);
     pnh_.param<int>("fine_debug_csv_max_cycles", csv_max_cycles, 50);
+
+    // 获取 obstacle_mapping 软件包的绝对路径，并设置默认保存路径
     const std::string package_path =
         ros::package::getPath("obstacle_mapping");
     const std::string default_csv_path =
         package_path + "/fine_traversability_debug.csv";
+
     pnh_.param<std::string>("fine_debug_csv_path", csv_path,
                             default_csv_path);
     if (csv_path.empty())
@@ -2192,12 +2208,15 @@ void Mapping::finegrained_traversability_mapping()
     if (csv_enabled)
     {
       bool write_header = true;
+
+      // 如果设置为追加模式，先检查文件是否已存在且非空，以决定是否写入表头
       if (csv_append)
       {
         std::ifstream existing(csv_path);
         write_header = !existing.good() || existing.peek() == std::ifstream::traits_type::eof();
       }
 
+      // 根据追加或覆盖配置，设置文件打开模式
       const std::ios_base::openmode mode =
           std::ios::out | (csv_append ? std::ios::app : std::ios::trunc);
       csv_stream.open(csv_path, mode);
@@ -2210,6 +2229,7 @@ void Mapping::finegrained_traversability_mapping()
       }
       else
       {
+        // 首次打开或新文件，写入 CSV 表头（列名）
         if (write_header)
         {
           csv_stream
@@ -2219,6 +2239,7 @@ void Mapping::finegrained_traversability_mapping()
               << "pitch_deg,contact_points,stable,final_cost,"
               << "success_count,collision_count,failure_count,skipped_cells\n";
         }
+        // 设置浮点数输出精度为 9 位
         csv_stream << std::setprecision(9);
         ROS_INFO("Fine traversability diagnostic CSV: %s (max_cycles=%d)",
                  csv_path.c_str(), csv_max_cycles);
@@ -2228,12 +2249,15 @@ void Mapping::finegrained_traversability_mapping()
     csv_configured = true;
   }
 
+  // 2. 更新运行周期状态
   ++csv_cycle;
+  // 判断当前周期是否需要进行记录：需满足“启用、文件成功打开、且未超出最大记录周期数”
   const bool record_this_cycle =
       csv_enabled && csv_stream.is_open() &&
       csv_cycle <= static_cast<std::size_t>(csv_max_cycles);
-  const double csv_stamp = ros::Time::now().toSec();
+  const double csv_stamp = ros::Time::now().toSec(); // 获取当前 ROS 时间戳（秒）
 
+  // 3. 定义用于写入单个栅格评估记录的 Lambda 辅助函数
   auto writeCellRecord = [&](const VehicleEvalContext &vehicle,
                              const grid_map::Position &position,
                              float slope_value,
@@ -2251,11 +2275,14 @@ void Mapping::finegrained_traversability_mapping()
                              int stable,
                              float final_cost)
   {
+    // 如果当前周期不满足记录条件，直接返回
     if (!record_this_cycle)
     {
       return;
     }
 
+    // 将该栅格的所有精细评估指标、状态值及姿态参数写入 CSV 文件
+    // 注意：行末有连续逗号，是为汇总类型记录（如 summary）保留的占位符（对应 success_count 等列）
     csv_stream << "cell," << csv_stamp << ',' << csv_cycle << ','
                << vehicle.id << ',' << vehicle.name << ','
                << position.x() << ',' << position.y() << ','
@@ -2281,20 +2308,26 @@ void Mapping::finegrained_traversability_mapping()
   }
 
   // -----------------------------------------------------
-  // [5] 由 orientation 提取 yaw，并构造 yaw 旋转矩阵
+  // [5] 配置半圆航向采样
   // -----------------------------------------------------
-  // 目的：让所有 cell 的评估都使用“同一个 yaw”，保证一致性
-  tf::Quaternion q_vehicle(current_orientation.x(), current_orientation.y(),
-                           current_orientation.z(), current_orientation.w());
-  double yaw_angle = tf::getYaw(q_vehicle); // 车体航向角（弧度）
+  // 车辆前后方向对称，因此只在 [0, pi) 范围内采样。
+  // 4个采样方向分别为 0°、45°、90°、135°。
+  // 180°与0°等价，不重复计算。
+  tf::Quaternion q_vehicle(current_orientation.x(), current_orientation.y(), current_orientation.z(), current_orientation.w());
+
+  const double yaw_angle = tf::getYaw(q_vehicle);
 
   static bool fine_pose_configured = false;
-  static int fine_heading_samples = 8;
+  static int fine_heading_samples = 4;
+
   if (!fine_pose_configured)
   {
-    pnh_.param<int>("fine_heading_samples", fine_heading_samples, 8);
+    pnh_.param<int>("fine_heading_samples", fine_heading_samples, 4);
+
     fine_heading_samples = std::max(1, fine_heading_samples);
+
     fine_pose_configured = true;
+
     ROS_INFO("Fine traversability heading samples: %d",
              fine_heading_samples);
   }
@@ -2400,32 +2433,26 @@ void Mapping::finegrained_traversability_mapping()
         // compatibility.  Multiple samples use fixed global headings so the
         // stored global traversability layer does not change when the robot
         // itself turns.
-        const double heading =
-            fine_heading_samples == 1
-                ? yaw_angle
-                : (2.0 * M_PI * static_cast<double>(heading_index) /
-                   static_cast<double>(fine_heading_samples));
+        const double heading = fine_heading_samples == 1 ? yaw_angle
+                                                         : (M_PI * static_cast<double>(heading_index) / static_cast<double>(fine_heading_samples));
+
         const double heading_deg = heading * 180.0 / M_PI;
-        const Eigen::Matrix3d heading_rotation =
-            Eigen::AngleAxisd(heading, z_axis).toRotationMatrix();
+        const Eigen::Matrix3d heading_rotation = Eigen::AngleAxisd(heading, z_axis).toRotationMatrix();
 
         double roll = 0.0;
         double pitch = 0.0;
         int contact_points = 0;
         int is_stable = 0;
-        const int pose_status = predictRobotPose(
-            idx, roll, pitch, contact_points, is_stable,
-            heading_rotation, *vehicle.model, vehicle.id);
+        const int pose_status = predictRobotPose(idx, roll, pitch, contact_points, is_stable,
+                                                 heading_rotation, *vehicle.model, vehicle.id);
 
-        if (pose_status == kPoseSuccess && is_stable != 0 &&
-            std::isfinite(roll) && std::isfinite(pitch))
+        if (pose_status == kPoseSuccess && is_stable != 0 && std::isfinite(roll) && std::isfinite(pitch))
         {
-          const double roll_cost =
-              std::min(1.0, std::fabs(roll) / roll_norm);
-          const double pitch_cost =
-              std::min(1.0, std::fabs(pitch) / pitch_norm);
-          const float fine_cost = static_cast<float>(
-              0.5 * (roll_cost + pitch_cost));
+          const double roll_cost = std::min(1.0, std::fabs(roll) / roll_norm);
+
+          const double pitch_cost = std::min(1.0, std::fabs(pitch) / pitch_norm);
+
+          const float fine_cost = static_cast<float>(0.5 * (roll_cost + pitch_cost));
 
           if (!has_success || fine_cost < best_cost)
           {
@@ -2577,17 +2604,13 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx, double &roll, d
   static double fine_max_pose_tilt_deg = 60.0;
   if (!pose_limits_configured)
   {
-    pnh_.param<int>("fine_min_support_points",
-                    fine_min_support_points, 3);
-    pnh_.param<double>("fine_max_rotation_step_deg",
-                       fine_max_rotation_step_deg, 5.0);
-    pnh_.param<double>("fine_max_pose_tilt_deg",
-                       fine_max_pose_tilt_deg, 60.0);
+    pnh_.param<int>("fine_min_support_points", fine_min_support_points, 3);
+    pnh_.param<double>("fine_max_rotation_step_deg", fine_max_rotation_step_deg, 5.0);
+    pnh_.param<double>("fine_max_pose_tilt_deg", fine_max_pose_tilt_deg, 60.0);
+
     fine_min_support_points = std::max(3, fine_min_support_points);
-    fine_max_rotation_step_deg = std::max(
-        0.1, std::min(30.0, fine_max_rotation_step_deg));
-    fine_max_pose_tilt_deg = std::max(
-        1.0, std::min(89.0, fine_max_pose_tilt_deg));
+    fine_max_rotation_step_deg = std::max(0.1, std::min(30.0, fine_max_rotation_step_deg));
+    fine_max_pose_tilt_deg = std::max(1.0, std::min(89.0, fine_max_pose_tilt_deg));
     pose_limits_configured = true;
   }
 
@@ -3195,99 +3218,28 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx, double &roll, d
   return is_stable ? kPoseSuccess : kPoseFailure;
 }
 
-// ==================== Plane Fitting ====================
-// bool Mapping::checkWheel(int vehicle_type, int i, int j) const
-// {
-//   // 说明：i/j 是车辆模型离散网格的行列索引（从 0 开始）
-//   // 该函数用于区分“允许接触地面的区域(轮/履带)” 和 “不该接触的区域(底盘/车体)”
-
-//   if (vehicle_type == 1)
-//   {
-//     // -------------------------
-//     // 车型 1：轮式车
-//     // -------------------------
-//     // wheel_rows / wheel_cols 描述轮子接触斑块所在的行/列集合
-//     // 注意：这里只是“离散网格上的近似轮子区域”，不是连续几何
-
-//     static const std::array<int, 4> wheel_rows = {0, 1, 7, 8};    // 轮子所在的行范围（前后两排）
-//     static const std::array<int, 5> wheel_cols = {1, 2, 3, 8, 9}; // 轮子所在的列范围（左右两侧）
-
-//     // row_matches: i 是否落在轮子行集合
-//     bool row_matches = std::find(wheel_rows.begin(), wheel_rows.end(), i) != wheel_rows.end();
-
-//     // col_matches: j 是否落在轮子列集合
-//     bool col_matches = std::find(wheel_cols.begin(), wheel_cols.end(), j) != wheel_cols.end();
-
-//     if (row_matches && col_matches)
-//     {
-//       // (i,j) 同时落在轮子行集合 & 轮子列集合 → 认为这是“轮子接触区域”
-//       // 返回 false：表示“这是允许接触的点”，不要用它做 collision 判定
-//       return false;
-//     }
-
-//     // 其它位置：认为属于底盘/车体区域（不应该穿透/接触）
-//     // 返回 true：表示“这是敏感点”，如果 gap 很小/为负 → 判 collision
-//     return true;
-//   }
-
-//   if (vehicle_type == 2)
-//   {
-//     // -------------------------
-//     // 车型 2：履带车
-//     // -------------------------
-//     // 这里用 “列集合” 表示履带接触面（例如左右两条履带所在的列带）
-//     static const std::array<int, 4> wheel_cols = {0, 1, 7, 8};
-
-//     bool col_matches = std::find(wheel_cols.begin(), wheel_cols.end(), j) != wheel_cols.end();
-//     if (col_matches)
-//     {
-//       // 落在履带接触列 → 允许接触 → 返回 false（不作为 collision 敏感点）
-//       return false;
-//     }
-
-//     // 中间区域：视为车体/底盘 → 返回 true（敏感点）
-//     return true;
-//   }
-
-//   // 其它 vehicle_type：兜底当作底盘敏感点（一般不应该走到这）
-//   return true;
-// }
-
 bool Mapping::checkWheel(int vehicle_type, int i, int j) const
 {
   // false：车轮/履带接触区域
   // true：底盘区域，需要检查碰撞
-
   if (vehicle_type == 1)
   {
-    static const std::array<int, 4> wheel_rows = {
-        0, 1, 7, 8};
+    static const std::array<int, 4> wheel_rows = {0, 1, 7, 8};
 
-    static const std::array<int, 5> wheel_cols = {
-        1, 2, 3, 8, 9};
+    static const std::array<int, 5> wheel_cols = {1, 2, 3, 8, 9};
 
-    const bool row_matches =
-        std::find(wheel_rows.begin(),
-                  wheel_rows.end(),
-                  i) != wheel_rows.end();
+    const bool row_matches = std::find(wheel_rows.begin(), wheel_rows.end(), i) != wheel_rows.end();
 
-    const bool col_matches =
-        std::find(wheel_cols.begin(),
-                  wheel_cols.end(),
-                  j) != wheel_cols.end();
+    const bool col_matches = std::find(wheel_cols.begin(), wheel_cols.end(), j) != wheel_cols.end();
 
     return !(row_matches && col_matches);
   }
 
   if (vehicle_type == 2)
   {
-    static const std::array<int, 4> track_rows = {
-        0, 1, 7, 8};
+    static const std::array<int, 4> track_rows = {0, 1, 7, 8};
 
-    const bool is_track =
-        std::find(track_rows.begin(),
-                  track_rows.end(),
-                  i) != track_rows.end();
+    const bool is_track = std::find(track_rows.begin(), track_rows.end(), i) != track_rows.end();
 
     return !is_track;
   }
@@ -3407,16 +3359,13 @@ void Mapping::publishGridMap()
   if (!global_publisher_initialized)
   {
     std::string global_gridmap_topic;
-    pnh_.param<std::string>("global_gridmap_topic",
-                            global_gridmap_topic,
-                            "global_trav_map");
-    pnh_.param<int>("global_publish_every_n",
-                    global_publish_every_n,
-                    10);
+    pnh_.param<std::string>("global_gridmap_topic", global_gridmap_topic, "global_trav_map");
+
+    pnh_.param<int>("global_publish_every_n", global_publish_every_n, 10);
+
     global_publish_every_n = std::max(1, global_publish_every_n);
 
-    global_gridmap_pub = nh_.advertise<grid_map_msgs::GridMap>(
-        global_gridmap_topic, 1, true);
+    global_gridmap_pub = nh_.advertise<grid_map_msgs::GridMap>(global_gridmap_topic, 1, true);
     global_publisher_initialized = true;
 
     ROS_INFO("Global explored grid map will be published on %s every %d local publications",
@@ -3439,8 +3388,7 @@ void Mapping::publishGridMap()
 
     if (!height_map_.exists("n_points"))
     {
-      ROS_WARN_THROTTLE(2.0,
-                        "Cannot build global explored map: n_points layer is missing.");
+      ROS_WARN_THROTTLE(2.0, "Cannot build global explored map: n_points layer is missing.");
       return;
     }
 
@@ -3480,8 +3428,7 @@ void Mapping::publishGridMap()
 
     if (observed_cell_count == 0)
     {
-      ROS_WARN_THROTTLE(2.0,
-                        "No observed cells yet; skip global grid map publication.");
+      ROS_WARN_THROTTLE(2.0, "No observed cells yet; skip global grid map publication.");
       return;
     }
 
@@ -3507,12 +3454,10 @@ void Mapping::publishGridMap()
     const grid_map::Length submap_length(length_x, length_y);
 
     bool success = false;
-    global_explored_map = height_map_.getSubmap(
-        submap_center, submap_length, success);
+    global_explored_map = height_map_.getSubmap(submap_center, submap_length, success);
     if (!success)
     {
-      ROS_WARN_THROTTLE(2.0,
-                        "Failed to crop the global explored grid map.");
+      ROS_WARN_THROTTLE(2.0, "Failed to crop the global explored grid map.");
       return;
     }
   }
@@ -3545,8 +3490,8 @@ void Mapping::publishGridMap()
   global_explored_map.setTimestamp(ros::Time::now().toNSec());
 
   grid_map_msgs::GridMap global_message;
-  grid_map::GridMapRosConverter::toMessage(global_explored_map,
-                                           global_message);
+  grid_map::GridMapRosConverter::toMessage(global_explored_map, global_message);
+
   global_gridmap_pub.publish(global_message);
 
   ROS_INFO_THROTTLE(2.0,
@@ -3636,325 +3581,6 @@ bool Mapping::buildGridMapMessage(grid_map_msgs::GridMap &message)
 
   return true;
 }
-
-// bool Mapping::buildGridMapMessage(grid_map_msgs::GridMap &message)
-// {
-//   // ==========================================
-//   // [0] 检查 origin 是否已收到
-//   // ==========================================
-//   if (!has_origin_.load(std::memory_order_acquire))
-//   {
-//     ROS_WARN_THROTTLE(2.0, "No viewpoint origin received yet, skip publishing.");
-//     return false;
-//   }
-
-//   // 把 origin 的快照取出来（左下角）
-//   Eigen::Vector3d origin;
-//   ros::Time origin_stamp;
-//   {
-//     std::lock_guard<std::mutex> lk(origin_mutex_);
-//     origin = latest_origin_;
-//     origin_stamp = latest_origin_stamp_;
-//   }
-
-//   // ==========================================
-//   // [1] 加锁：保护 height_map_ 的读操作
-//   // ==========================================
-//   std::lock_guard<std::mutex> lock(gridmap_publish_mutex_);
-
-//   // ==========================================
-//   // [2] 检查 size 合法性（用 ViewPoint 的窗口大小）
-//   // ==========================================
-//   if (viewpoint_grid_size_x_ <= 0.0 || viewpoint_grid_size_y_ <= 0.0)
-//   {
-//     ROS_WARN_THROTTLE(2.0, "Invalid viewpoint grid size: x=%.3f, y=%.3f",
-//                       viewpoint_grid_size_x_, viewpoint_grid_size_y_);
-//     return false;
-//   }
-
-//   // submap 的长宽（单位：m）
-//   grid_map::Length submap_length(viewpoint_grid_size_x_, viewpoint_grid_size_y_);
-
-//   // ==========================================
-//   // [3] origin(左下角) -> submap center(中心点)
-//   // ==========================================
-//   grid_map::Position submap_center(origin.x() + 0.5 * viewpoint_grid_size_x_,
-//                                    origin.y() + 0.5 * viewpoint_grid_size_y_);
-
-//   // ==========================================
-//   // [4] 可选但强烈建议：clamp center，防止窗口越界导致 getSubmap 失败
-//   // ==========================================
-//   const grid_map::Position map_center = height_map_.getPosition();
-//   const grid_map::Length map_len = height_map_.getLength();
-
-//   // 如果窗口比全图还大，直接失败（否则怎么裁都裁不出来）
-//   if (submap_length.x() > map_len.x() || submap_length.y() > map_len.y())
-//   {
-//     ROS_WARN_THROTTLE(2.0,
-//                       "Submap larger than height_map. submap=[%.2f %.2f], map=[%.2f %.2f]",
-//                       submap_length.x(), submap_length.y(), map_len.x(), map_len.y());
-//     return false;
-//   }
-
-//   const double map_min_x = map_center.x() - 0.5 * map_len.x();
-//   const double map_max_x = map_center.x() + 0.5 * map_len.x();
-//   const double map_min_y = map_center.y() - 0.5 * map_len.y();
-//   const double map_max_y = map_center.y() + 0.5 * map_len.y();
-
-//   const double half_x = 0.5 * submap_length.x();
-//   const double half_y = 0.5 * submap_length.y();
-
-//   // clamp center 到合法范围
-//   submap_center.x() = std::min(std::max(submap_center.x(), map_min_x + half_x), map_max_x - half_x);
-//   submap_center.y() = std::min(std::max(submap_center.y(), map_min_y + half_y), map_max_y - half_y);
-
-//   // ==========================================
-//   // [5] 从全局 height_map_ 裁剪局部 submap（按 origin+size）
-//   // ==========================================
-//   bool success = false;
-//   grid_map::GridMap local_map = height_map_.getSubmap(submap_center, submap_length, success);
-
-//   if (!success)
-//   {
-//     ROS_WARN_THROTTLE(1.0,
-//                       "getSubmap failed. origin=[%.2f %.2f], center=[%.2f %.2f], size=[%.2f %.2f]",
-//                       origin.x(), origin.y(),
-//                       submap_center.x(), submap_center.y(),
-//                       submap_length.x(), submap_length.y());
-//     return false;
-//   }
-
-//   // 时间戳对齐 origin（可选）
-//   local_map.setTimestamp(origin_stamp.toNSec());
-
-//   // ==========================================
-//   // [6] 只保留白名单层（减少消息体积）
-//   // ==========================================
-//   static const std::vector<std::string> layers_to_publish = {
-//       "elevation",
-//       "elevation_BGK",
-//       "slope",
-//       "roughness",
-//       "step",
-//       "traversability",
-//       "traversability_fine_wheeled",
-//       "traversability_fine_tracked",
-//       "critical"};
-
-//   const auto existing_layers = local_map.getLayers();
-//   for (const auto &layer : existing_layers)
-//   {
-//     if (std::find(layers_to_publish.begin(), layers_to_publish.end(), layer) == layers_to_publish.end())
-//     {
-//       local_map.erase(layer);
-//     }
-//   }
-
-//   // ==========================================
-//   // [7] 转 ROS 消息
-//   // ==========================================
-//   grid_map::GridMapRosConverter::toMessage(local_map, message);
-//   return true;
-// }
-
-// bool Mapping::buildGridMapMessage(grid_map_msgs::GridMap &message)
-// {
-//   // ==========================================================
-//   // [0] 获取最新 origin（ViewPoint 左下角），没有就不发布
-//   // ==========================================================
-//   if (!has_origin_.load(std::memory_order_acquire))
-//   {
-//     ROS_WARN_THROTTLE(2.0, "No viewpoint origin yet, skip grid map publish.");
-//     return false;
-//   }
-
-//   Eigen::Vector3d origin;
-//   ros::Time origin_stamp;
-//   {
-//     std::lock_guard<std::mutex> lk(origin_mutex_);
-//     origin = latest_origin_;
-//     origin_stamp = latest_origin_stamp_;
-//   }
-
-//   // ==========================================================
-//   // [1] 加锁保护 height_map_（读）
-//   // ==========================================================
-//   std::lock_guard<std::mutex> lock(gridmap_publish_mutex_);
-
-//   // ==========================================================
-//   // [2] 输出地图几何：严格对齐 ViewPoint（res + origin）
-//   //     grid_map 只有一个二维 resolution，所以用 viewpoint_resolution_x_
-//   // ==========================================================
-//   const double vp_res_x = viewpoint_resolution_x_;
-//   const double vp_res_y = viewpoint_resolution_y_;
-
-//   double out_res = vp_res_x;
-//   if (std::fabs(vp_res_x - vp_res_y) > 1e-9)
-//   {
-//     ROS_WARN_THROTTLE(2.0,
-//                       "ViewPoint res x!=y (%.4f vs %.4f). grid_map uses single res, using res_x.",
-//                       vp_res_x, vp_res_y);
-//   }
-
-//   if (out_res <= 0.0 || viewpoint_number_x_ <= 0 || viewpoint_number_y_ <= 0)
-//   {
-//     ROS_WARN_THROTTLE(2.0, "Invalid viewpoint params: res=%.4f, nx=%d, ny=%d",
-//                       out_res, viewpoint_number_x_, viewpoint_number_y_);
-//     return false;
-//   }
-
-//   // 窗口大小（米），严格用 number * ViewPoint res
-//   const double size_x = static_cast<double>(viewpoint_number_x_) * out_res;
-//   const double size_y = static_cast<double>(viewpoint_number_y_) * out_res;
-
-//   // 让输出 map 的 min corner = origin（左下角）
-//   const grid_map::Position out_center(origin.x() + 0.5 * size_x,
-//                                       origin.y() + 0.5 * size_y);
-
-//   grid_map::GridMap out_map;
-//   out_map.setFrameId(height_map_.getFrameId()); // 若你希望固定 "map"，也可以写 "map"
-//   out_map.setTimestamp(origin_stamp.toNSec());
-//   out_map.setGeometry(grid_map::Length(size_x, size_y), out_res, out_center);
-
-//   // ==========================================================
-//   // [3] 选择发布层 + 每层的 pooling 策略
-//   //     你要求 traversability 系列由 MIN 改为 MAX
-//   // ==========================================================
-//   enum class PoolType
-//   {
-//     MIN,
-//     MAX,
-//     MEAN
-//   };
-
-//   struct LayerPolicy
-//   {
-//     std::string name;
-//     PoolType type;
-//   };
-
-//   const std::vector<LayerPolicy> policies = {
-//       {"elevation", PoolType::MEAN},
-//       {"elevation_BGK", PoolType::MEAN},
-//       {"slope", PoolType::MEAN},
-//       {"roughness", PoolType::MEAN},
-//       {"step", PoolType::MAX},
-//       {"traversability", PoolType::MAX},
-//       {"traversability_fine_wheeled", PoolType::MAX},
-//       {"traversability_fine_tracked", PoolType::MAX},
-//       {"critical", PoolType::MAX},
-//   };
-
-//   // 只添加 height_map_ 中实际存在的层
-//   std::vector<LayerPolicy> used;
-//   used.reserve(policies.size());
-//   for (const auto &p : policies)
-//   {
-//     if (height_map_.exists(p.name))
-//     {
-//       out_map.add(p.name, std::numeric_limits<float>::quiet_NaN());
-//       used.push_back(p);
-//     }
-//   }
-
-//   if (used.empty())
-//   {
-//     ROS_WARN_THROTTLE(2.0, "None of publish layers exist in height_map_.");
-//     return false;
-//   }
-
-//   // ==========================================================
-//   // [4] 块聚合 pooling：每个 coarse cell 覆盖 out_res × out_res 的窗口
-//   //     在高分辨率 height_map_ 上聚合得到一个值
-//   // ==========================================================
-//   auto isFinite = [](float v) -> bool
-//   { return std::isfinite(v); };
-
-//   auto poolLayerOnSubmap = [&](const std::string &layer,
-//                                const grid_map::SubmapGeometry &subgeom,
-//                                PoolType type) -> float
-//   {
-//     grid_map::SubmapIterator it(subgeom);
-
-//     if (type == PoolType::MEAN)
-//     {
-//       double sum = 0.0;
-//       int cnt = 0;
-//       for (; !it.isPastEnd(); ++it)
-//       {
-//         const grid_map::Index idx = *it;
-//         const float v = height_map_.at(layer, idx);
-//         if (!isFinite(v))
-//           continue;
-//         sum += v;
-//         cnt++;
-//       }
-//       return (cnt > 0) ? static_cast<float>(sum / cnt)
-//                        : std::numeric_limits<float>::quiet_NaN();
-//     }
-//     else if (type == PoolType::MIN)
-//     {
-//       float best = std::numeric_limits<float>::infinity();
-//       bool has = false;
-//       for (; !it.isPastEnd(); ++it)
-//       {
-//         const grid_map::Index idx = *it;
-//         const float v = height_map_.at(layer, idx);
-//         if (!isFinite(v))
-//           continue;
-//         best = std::min(best, v);
-//         has = true;
-//       }
-//       return has ? best : std::numeric_limits<float>::quiet_NaN();
-//     }
-//     else // MAX
-//     {
-//       float best = -std::numeric_limits<float>::infinity();
-//       bool has = false;
-//       for (; !it.isPastEnd(); ++it)
-//       {
-//         const grid_map::Index idx = *it;
-//         const float v = height_map_.at(layer, idx);
-//         if (!isFinite(v))
-//           continue;
-//         best = std::max(best, v);
-//         has = true;
-//       }
-//       return has ? best : std::numeric_limits<float>::quiet_NaN();
-//     }
-//   };
-
-//   const grid_map::Length cell_window(out_res, out_res);
-
-//   for (grid_map::GridMapIterator it(out_map); !it.isPastEnd(); ++it)
-//   {
-//     const grid_map::Index idx_out(*it);
-
-//     // coarse cell 中心点坐标
-//     grid_map::Position cell_center;
-//     out_map.getPosition(idx_out, cell_center);
-
-//     // 如果高分辨率图不覆盖该区域，保持 NaN
-//     if (!height_map_.isInside(cell_center))
-//       continue;
-
-//     bool ok = false;
-//     grid_map::SubmapGeometry subgeom(height_map_, cell_center, cell_window, ok);
-//     if (!ok)
-//       continue;
-
-//     for (const auto &p : used)
-//     {
-//       out_map.at(p.name, idx_out) = poolLayerOnSubmap(p.name, subgeom, p.type);
-//     }
-//   }
-
-//   // ==========================================================
-//   // [5] 转 ROS 消息
-//   // ==========================================================
-//   grid_map::GridMapRosConverter::toMessage(out_map, message);
-//   return true;
-// }
 
 bool Mapping::buildGridMapFromViewpointCloud(grid_map_msgs::GridMap &message)
 {

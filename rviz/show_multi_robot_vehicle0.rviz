@@ -26,7 +26,7 @@ Panels:
   - Class: rviz/Time
     Name: Time
     SyncMode: 0
-    SyncSource: ""
+    SyncSource: RegisteredScan
 Preferences:
   PromptSaveOnExit: true
 Toolbars:
@@ -131,7 +131,7 @@ Visualization Manager:
       Size (Pixels): 5
       Size (m): 0.009999999776482582
       Style: Points
-      Topic: /vehicle0/registered_scan_accum_10
+      Topic: /registered_point_cloud
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: true
@@ -310,7 +310,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 99.61540222167969
+      Distance: 102.27010345458984
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -318,9 +318,9 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: 20.240066528320312
-        Y: 26.303424835205078
-        Z: -15.021175384521484
+        X: 16.06212043762207
+        Y: 26.65834617614746
+        Z: -15.139644622802734
       Focal Shape Fixed Size: false
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
@@ -328,7 +328,7 @@ Visualization Manager:
       Near Clip Distance: 0.009999999776482582
       Pitch: 1.5697963237762451
       Target Frame: vehicle0/vehicle
-      Yaw: 4.708592414855957
+      Yaw: 4.698594093322754
     Saved: ~
 Window Geometry:
   Displays:
