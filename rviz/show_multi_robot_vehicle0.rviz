@@ -5,10 +5,9 @@ Panels:
     Property Tree Widget:
       Expanded:
         - /Status1
-        - /RegisteredScan1
         - /RegisteredScan1/Autocompute Value Bounds1
         - /GridMap1
-        - /PointCloud21
+        - /GridMap2
       Splitter Ratio: 0.5
     Tree Height: 591
   - Class: rviz/Selection
@@ -28,7 +27,7 @@ Panels:
   - Class: rviz/Time
     Name: Time
     SyncMode: 0
-    SyncSource: RegisteredScan
+    SyncSource: ""
 Preferences:
   PromptSaveOnExit: true
 Toolbars:
@@ -122,7 +121,7 @@ Visualization Manager:
       Color: 255; 255; 255
       Color Transformer: AxisColor
       Decay Time: 0
-      Enabled: true
+      Enabled: false
       Invert Rainbow: false
       Max Color: 255; 255; 255
       Min Color: 0; 0; 0
@@ -137,7 +136,7 @@ Visualization Manager:
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: true
-      Value: true
+      Value: false
     - Angle Tolerance: 0.10000000149011612
       Class: rviz/Odometry
       Covariance:
@@ -177,10 +176,10 @@ Visualization Manager:
       Autocompute Intensity Bounds: false
       Class: grid_map_rviz_plugin/GridMap
       Color: 200; 200; 200
-      Color Layer: traversability_fine_tracked
+      Color Layer: traversability_fine_wheeled
       Color Transformer: IntensityLayer
       Enabled: true
-      Height Layer: traversability_fine_tracked
+      Height Layer: traversability_fine_wheeled
       Height Transformer: Layer
       History Length: 1
       Invert Rainbow: false
@@ -194,12 +193,33 @@ Visualization Manager:
       Unreliable: false
       Use Rainbow: false
       Value: true
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Class: grid_map_rviz_plugin/GridMap
+      Color: 200; 200; 200
+      Color Layer: traversability_fine_tracked
+      Color Transformer: IntensityLayer
+      Enabled: true
+      Height Layer: traversability_fine_tracked
+      Height Transformer: Layer
+      History Length: 1
+      Invert Rainbow: false
+      Max Color: 239; 41; 41
+      Max Intensity: 10
+      Min Color: 138; 226; 52
+      Min Intensity: 0
+      Name: GridMap
+      Show Grid Lines: true
+      Topic: /vehicle0/trav_map
+      Unreliable: false
+      Use Rainbow: false
+      Value: true
     - Class: rviz/Marker
       Enabled: true
       Marker Topic: /vehicle0/tare_visualizer/local_planning_horizon
       Name: LocalHorizon
       Namespaces:
-        "": true
+        {}
       Queue Size: 100
       Value: true
     - Class: rviz/MarkerArray
@@ -216,7 +236,7 @@ Visualization Manager:
       Length: 1
       Name: vehicle_frame
       Radius: 0.10000000149011612
-      Reference Frame: vehicle0/vehicle
+      Reference Frame: sensor
       Show Trail: false
       Value: true
     - Class: rviz/Marker
@@ -291,7 +311,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 7.895707607269287
+      Distance: 68.81077575683594
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -299,17 +319,17 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: 0.04408721625804901
-        Y: -6.722775936126709
-        Z: 1.9235296249389648
+        X: 16.504236221313477
+        Y: 51.82619857788086
+        Z: -14.42588996887207
       Focal Shape Fixed Size: false
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 1.1147969961166382
+      Pitch: 1.4547964334487915
       Target Frame: vehicle0/vehicle
-      Yaw: 4.640397548675537
+      Yaw: 6.1685943603515625
     Saved: ~
 Window Geometry:
   Displays:

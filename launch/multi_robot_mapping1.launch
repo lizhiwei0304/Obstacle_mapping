@@ -13,7 +13,7 @@
     <arg name="start_topic" default="/start_exploration" />
 
     <group ns="$(arg namespace_1)">
-        <node name="cloud_merger_and_accumulator"
+        <!-- <node name="cloud_merger_and_accumulator"
               pkg="obstacle_mapping"
               type="cloud_merger_and_accumulator.py"
               output="screen">
@@ -30,7 +30,7 @@
             <param name="registered_scan_accum_out" value="registered_scan_accum_10" />
             <param name="sync_slop" value="0.10" />
             <param name="sync_queue" value="10" />
-        </node>
+        </node> -->
 
         <include file="$(find obstacle_mapping)/launch/robot_mapping.launch">
             <arg name="ns" value="$(arg namespace_1)" />

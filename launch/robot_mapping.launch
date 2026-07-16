@@ -53,7 +53,7 @@
     <node name="multi_robot_mapping_node" pkg="obstacle_mapping" type="multi_robot_mapping_node"
         output="screen">
         <!-- Topic and frame settings -->
-        <param name="scan_topic" value="/$(arg ns)/registered_scan_accum_10" />
+        <param name="scan_topic" value="/registered_point_cloud" />
         <param name="frame_id" value="$(arg frame_id)" />
         <param name="queue_size" value="$(arg queue_size)" />
 

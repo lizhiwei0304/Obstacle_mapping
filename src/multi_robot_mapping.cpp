@@ -104,12 +104,6 @@ Mapping::Mapping(ros::NodeHandle &nh, ros::NodeHandle &pnh)
 
   initGridMap();
 
-  // ROS_INFO("Subscribed to origin topic: %s", origin_topic_.c_str());
-  // origin_sub_ = nh_.subscribe<geometry_msgs::PointStamped>(origin_topic_, 10, &Mapping::originCallback, this);
-
-  // ROS_INFO("Subscribed to viewpoint_vis topic: %s", viewpoint_vis_topic_.c_str());
-  // viewpoint_vis_cloud_sub_ = nh_.subscribe(viewpoint_vis_topic_, 5, &Mapping::viewpointVisCloudCallback, this);
-
   // Subscribe to point cloud topics
   ROS_INFO("Subscribing to point cloud and odometry topics with time synchronization...");
 
@@ -118,7 +112,7 @@ Mapping::Mapping(ros::NodeHandle &nh, ros::NodeHandle &pnh)
       nh_, scan_topic_, queue_size_);
 
   odom_filter_sub_ = std::make_shared<message_filters::Subscriber<nav_msgs::Odometry>>(
-      nh_, "/vehicle0/state_estimation", queue_size_);
+      nh_, "/laser_odom_init", queue_size_);
 
   // Create approximate time synchronizer (allows small time differences)
   // Queue size of 10 means it will try to synchronize the last 10 messages from each topic
@@ -131,7 +125,7 @@ Mapping::Mapping(ros::NodeHandle &nh, ros::NodeHandle &pnh)
   gridmap_pub_ = nh_.advertise<grid_map_msgs::GridMap>("trav_map", 10);
 
   ROS_INFO("Successfully subscribed to: %s (synchronized)", scan_topic_.c_str());
-  ROS_INFO("Successfully subscribed to: state_estimation (synchronized)");
+  ROS_INFO("Successfully subscribed to: /laser_odom_init (synchronized)");
   ROS_INFO("Publishing grid map on topic: trav_map");
 
   // Start processing thread for asynchronous point cloud processing
