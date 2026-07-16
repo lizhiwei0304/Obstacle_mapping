@@ -1229,6 +1229,9 @@ void Mapping::initGridMap()
   height_map_.add("slope");                       // Slope feature
   height_map_.add("roughness");                   // Roughness feature
   height_map_.add("step");                        // Step feature
+  height_map_.add("slope_deg");                   // Raw slope angle in degrees
+  height_map_.add("roughness_raw");               // Raw PCA roughness ratio
+  height_map_.add("step_height");                 // Raw local step height in meters
   height_map_.add("traversability");              // Traversability cost
   height_map_.add("traversability_fine_wheeled"); // Fine-grained traversability for wheeled car
   height_map_.add("traversability_fine_tracked"); // Fine-grained traversability for tracked car
@@ -1800,7 +1803,13 @@ bool Mapping::areaSingleNormalComputation(const grid_map::Index &index)
   // eigenvalues()(0)：最小特征值，代表“沿法向方向的方差”（点到平面的离散程度）
   // eigenvalues().sum()：总方差（所有方向）
   // 所以 λ0 / (λ0+λ1+λ2) 越大，说明点云越不“扁平”，地面更粗糙
-  float roughness = solver.eigenvalues()(0) / solver.eigenvalues().sum();
+  const double eigenvalue_sum = solver.eigenvalues().sum();
+  if (!std::isfinite(eigenvalue_sum) || eigenvalue_sum <= 1e-12)
+  {
+    return false;
+  }
+  const float roughness = static_cast<float>(std::max(
+      0.0, solver.eigenvalues()(0) / eigenvalue_sum));
 
   // slope：坡度（由法向的 z 分量决定）
   // normal.z() = cos(theta)（theta 是法向与竖直方向的夹角）
@@ -1809,7 +1818,16 @@ bool Mapping::areaSingleNormalComputation(const grid_map::Index &index)
   // 你后面除以 (slope_threshold_ * pi) 是一种人为归一化：
   // - slope_threshold_ 可能是一个阈值比例（例如 0.5 表示 90°*0.5=45°）
   // - 最终 slope 是一个无量纲比值，用于后续 traversability 代价融合
-  float slope = std::acos(std::min(1.0, std::max(-1.0, normal.z()))) / (slope_threshold_ * M_PI);
+  const double slope_angle_rad =
+      std::acos(std::min(1.0, std::max(-1.0, normal.z())));
+  const float slope_deg = static_cast<float>(
+      slope_angle_rad * 180.0 / M_PI);
+  if (slope_threshold_ <= 0.0 || roughness_threshold_ <= 0.0)
+  {
+    return false;
+  }
+  const float slope = static_cast<float>(
+      slope_angle_rad / (slope_threshold_ * M_PI));
 
   // =====================================================
   // [7] 将计算结果写回 grid_map 的 layer
@@ -1822,6 +1840,8 @@ bool Mapping::areaSingleNormalComputation(const grid_map::Index &index)
   // 保存 slope 与 roughness（你还做了阈值归一化）
   height_map_.at("slope", index) = slope;
   height_map_.at("roughness", index) = roughness / roughness_threshold_;
+  height_map_.at("slope_deg", index) = slope_deg;
+  height_map_.at("roughness_raw", index) = roughness;
 
   return true;
 }
@@ -1967,6 +1987,7 @@ bool Mapping::areaSingleStepComputation(const grid_map::Index &index)
   // - step ≈ 1 表示接近阈值大小的台阶
   // - step > 1 表示超过阈值的突变（可认为更不可通行）
   height_map_.at("step", index) = max_step / step_threshold_;
+  height_map_.at("step_height", index) = max_step;
 
   return true;
 }
@@ -2093,34 +2114,260 @@ void Mapping::traversability_mapping()
 // ==================== Fine-grained Traversability Mapping ====================
 void Mapping::finegrained_traversability_mapping()
 {
-  // =====================================================
-  // [0] 地图互斥锁：保护 height_map_ 的 layer 读写
-  // =====================================================
-  // 注意：整个函数都在锁内执行，如果 predictRobotPose 很慢，会阻塞发布/其它线程
   std::lock_guard<std::mutex> lock(gridmap_publish_mutex_);
 
-  // -----------------------------------------------------
-  // [1] 获取层引用
-  // -----------------------------------------------------
-  auto &traversability = height_map_["traversability"]; // 粗粒度 traversability（0~1）
-  auto &slope_layer = height_map_["slope"];             // 坡度层（通常是归一化后的）
+  auto &traversability = height_map_["traversability"];
+  auto &slope_layer = height_map_["slope"];
   auto &roughness_layer = height_map_["roughness"];
   auto &step_layer = height_map_["step"];
+  auto &slope_deg_layer = height_map_["slope_deg"];
+  auto &roughness_raw_layer = height_map_["roughness_raw"];
+  auto &step_height_layer = height_map_["step_height"];
   auto &n_points_layer = height_map_["n_points"];
   auto &interpolated_layer = height_map_["interpolated"];
-  auto &critical_layer = height_map_["critical"]; // 标记层：哪些 cell 做了 fine 检查
+  auto &critical_layer = height_map_["critical"];
 
-  // =====================================================
-  // [2] 定义一个“车辆评估上下文”，用同一套循环处理多个车型
-  // =====================================================
+  struct VehicleCapability
+  {
+    double slope_limit_deg;
+    double roughness_limit;
+    double step_limit_m;
+    double roll_limit_deg;
+    double pitch_limit_deg;
+    double max_pose_tilt_deg;
+    double touch_gap_threshold;
+    double collision_clearance;
+    double geo_slope_weight;
+    double geo_roughness_weight;
+    double geo_step_weight;
+    // Signed motion-efficiency correction:
+    //   +flat_penalty * (1-d): inefficient operation on flat terrain
+    //   +rough_penalty * d:    extra risk on rough terrain
+    //   -rough_bonus * d:      platform capability benefit on rough terrain
+    double efficiency_flat_penalty;
+    double efficiency_rough_penalty;
+    double efficiency_rough_bonus;
+  };
+
+  static bool capability_configured = false;
+  static VehicleCapability wheeled_capability = {
+      25.0, 0.04, 0.18, 25.0, 30.0, 40.0,
+      0.05, 0.10, 0.35, 0.25, 0.40,
+      0.00, 0.15, 0.00};
+  static VehicleCapability tracked_capability = {
+      35.0, 0.08, 0.30, 30.0, 40.0, 45.0,
+      0.05, 0.08, 0.30, 0.25, 0.45,
+      0.04, 0.00, 0.12};
+
+  static double pose_angle_weight = 0.65;
+  static double pose_support_weight = 0.20;
+  static double pose_heading_weight = 0.15;
+  static double efficiency_weight = 1.00;
+
+  // 地形严重度使用同一组参考值，保证两种平台的效率项可直接比较。
+  static double efficiency_slope_reference_deg = 35.0;
+  static double efficiency_roughness_reference = 0.08;
+  static double efficiency_step_reference_m = 0.30;
+  static double severity_slope_weight = 0.35;
+  static double severity_roughness_weight = 0.25;
+  static double severity_step_weight = 0.40;
+
+  // 这些范围作用于“按车型能力阈值归一化后的特征”。
+  static double fine_step_min = 0.20;
+  static double fine_step_max = 1.00;
+
+  auto clamp01 = [](double value)
+  {
+    return std::max(0.0, std::min(1.0, value));
+  };
+
+  auto normalizeThreeWeights = [](double &a, double &b, double &c,
+                                  double da, double db, double dc)
+  {
+    a = std::max(0.0, a);
+    b = std::max(0.0, b);
+    c = std::max(0.0, c);
+    double sum = a + b + c;
+    if (sum < 1e-9)
+    {
+      a = da;
+      b = db;
+      c = dc;
+      sum = a + b + c;
+    }
+    a /= sum;
+    b /= sum;
+    c /= sum;
+  };
+
+  if (!capability_configured)
+  {
+    auto loadCapability = [&](const std::string &prefix,
+                              VehicleCapability &capability)
+    {
+      pnh_.param<double>(prefix + "slope_limit_deg",
+                         capability.slope_limit_deg,
+                         capability.slope_limit_deg);
+      pnh_.param<double>(prefix + "roughness_limit",
+                         capability.roughness_limit,
+                         capability.roughness_limit);
+      pnh_.param<double>(prefix + "step_limit_m",
+                         capability.step_limit_m,
+                         capability.step_limit_m);
+      pnh_.param<double>(prefix + "roll_limit_deg",
+                         capability.roll_limit_deg,
+                         capability.roll_limit_deg);
+      pnh_.param<double>(prefix + "pitch_limit_deg",
+                         capability.pitch_limit_deg,
+                         capability.pitch_limit_deg);
+      pnh_.param<double>(prefix + "max_pose_tilt_deg",
+                         capability.max_pose_tilt_deg,
+                         capability.max_pose_tilt_deg);
+      pnh_.param<double>(prefix + "touch_gap_threshold",
+                         capability.touch_gap_threshold,
+                         capability.touch_gap_threshold);
+      pnh_.param<double>(prefix + "collision_clearance",
+                         capability.collision_clearance,
+                         capability.collision_clearance);
+      pnh_.param<double>(prefix + "geo_slope_weight",
+                         capability.geo_slope_weight,
+                         capability.geo_slope_weight);
+      pnh_.param<double>(prefix + "geo_roughness_weight",
+                         capability.geo_roughness_weight,
+                         capability.geo_roughness_weight);
+      pnh_.param<double>(prefix + "geo_step_weight",
+                         capability.geo_step_weight,
+                         capability.geo_step_weight);
+      capability.slope_limit_deg =
+          std::max(1e-3, capability.slope_limit_deg);
+      capability.roughness_limit =
+          std::max(1e-6, capability.roughness_limit);
+      capability.step_limit_m =
+          std::max(1e-3, capability.step_limit_m);
+      capability.roll_limit_deg =
+          std::max(1e-3, capability.roll_limit_deg);
+      capability.pitch_limit_deg =
+          std::max(1e-3, capability.pitch_limit_deg);
+      capability.max_pose_tilt_deg =
+          std::max(1.0, std::min(89.0, capability.max_pose_tilt_deg));
+      capability.touch_gap_threshold =
+          std::max(1e-4, capability.touch_gap_threshold);
+      capability.collision_clearance =
+          std::max(0.0, capability.collision_clearance);
+      normalizeThreeWeights(capability.geo_slope_weight,
+                            capability.geo_roughness_weight,
+                            capability.geo_step_weight,
+                            0.35, 0.25, 0.40);
+    };
+
+    loadCapability("wheeled_", wheeled_capability);
+    loadCapability("tracked_", tracked_capability);
+
+    // Explicit parameter names are used here so every launch parameter can be
+    // found directly in this source file without relying on prefix assembly.
+    pnh_.param<double>("wheeled_efficiency_flat_penalty",
+                       wheeled_capability.efficiency_flat_penalty, 0.00);
+    pnh_.param<double>("wheeled_efficiency_rough_penalty",
+                       wheeled_capability.efficiency_rough_penalty, 0.15);
+    pnh_.param<double>("wheeled_efficiency_rough_bonus",
+                       wheeled_capability.efficiency_rough_bonus, 0.00);
+    pnh_.param<double>("tracked_efficiency_flat_penalty",
+                       tracked_capability.efficiency_flat_penalty, 0.04);
+    pnh_.param<double>("tracked_efficiency_rough_penalty",
+                       tracked_capability.efficiency_rough_penalty, 0.00);
+    pnh_.param<double>("tracked_efficiency_rough_bonus",
+                       tracked_capability.efficiency_rough_bonus, 0.12);
+
+    wheeled_capability.efficiency_flat_penalty =
+        clamp01(wheeled_capability.efficiency_flat_penalty);
+    wheeled_capability.efficiency_rough_penalty =
+        clamp01(wheeled_capability.efficiency_rough_penalty);
+    wheeled_capability.efficiency_rough_bonus =
+        clamp01(wheeled_capability.efficiency_rough_bonus);
+    tracked_capability.efficiency_flat_penalty =
+        clamp01(tracked_capability.efficiency_flat_penalty);
+    tracked_capability.efficiency_rough_penalty =
+        clamp01(tracked_capability.efficiency_rough_penalty);
+    tracked_capability.efficiency_rough_bonus =
+        clamp01(tracked_capability.efficiency_rough_bonus);
+
+    pnh_.param<double>("pose_angle_weight",
+                       pose_angle_weight, 0.65);
+    pnh_.param<double>("pose_support_weight",
+                       pose_support_weight, 0.20);
+    pnh_.param<double>("pose_heading_weight",
+                       pose_heading_weight, 0.15);
+    pnh_.param<double>("mobility_efficiency_weight",
+                       efficiency_weight, 1.00);
+
+    pnh_.param<double>("efficiency_slope_reference_deg",
+                       efficiency_slope_reference_deg, 35.0);
+    pnh_.param<double>("efficiency_roughness_reference",
+                       efficiency_roughness_reference, 0.08);
+    pnh_.param<double>("efficiency_step_reference_m",
+                       efficiency_step_reference_m, 0.30);
+    pnh_.param<double>("severity_slope_weight",
+                       severity_slope_weight, 0.35);
+    pnh_.param<double>("severity_roughness_weight",
+                       severity_roughness_weight, 0.25);
+    pnh_.param<double>("severity_step_weight",
+                       severity_step_weight, 0.40);
+    pnh_.param<double>("fine_step_min", fine_step_min, 0.20);
+    pnh_.param<double>("fine_step_max", fine_step_max, 1.00);
+
+    normalizeThreeWeights(pose_angle_weight,
+                          pose_support_weight,
+                          pose_heading_weight,
+                          0.65, 0.20, 0.15);
+    normalizeThreeWeights(severity_slope_weight,
+                          severity_roughness_weight,
+                          severity_step_weight,
+                          0.35, 0.25, 0.40);
+
+    efficiency_weight = clamp01(efficiency_weight);
+    efficiency_slope_reference_deg =
+        std::max(1e-3, efficiency_slope_reference_deg);
+    efficiency_roughness_reference =
+        std::max(1e-6, efficiency_roughness_reference);
+    efficiency_step_reference_m =
+        std::max(1e-3, efficiency_step_reference_m);
+    fine_step_min = std::max(0.0, fine_step_min);
+    fine_step_max = std::max(fine_step_min, fine_step_max);
+
+    capability_configured = true;
+
+    ROS_INFO("Platform-dependent traversability configured");
+    ROS_INFO("  Wheeled limits: slope=%.1f deg, roughness=%.4f, step=%.3f m, roll=%.1f deg, pitch=%.1f deg",
+             wheeled_capability.slope_limit_deg,
+             wheeled_capability.roughness_limit,
+             wheeled_capability.step_limit_m,
+             wheeled_capability.roll_limit_deg,
+             wheeled_capability.pitch_limit_deg);
+    ROS_INFO("  Tracked limits: slope=%.1f deg, roughness=%.4f, step=%.3f m, roll=%.1f deg, pitch=%.1f deg",
+             tracked_capability.slope_limit_deg,
+             tracked_capability.roughness_limit,
+             tracked_capability.step_limit_m,
+             tracked_capability.roll_limit_deg,
+             tracked_capability.pitch_limit_deg);
+    ROS_INFO("  Efficiency correction: weight=%.2f", efficiency_weight);
+    ROS_INFO("    Wheeled: +%.3f*(1-d) + %.3f*d - %.3f*d",
+             wheeled_capability.efficiency_flat_penalty,
+             wheeled_capability.efficiency_rough_penalty,
+             wheeled_capability.efficiency_rough_bonus);
+    ROS_INFO("    Tracked: +%.3f*(1-d) + %.3f*d - %.3f*d",
+             tracked_capability.efficiency_flat_penalty,
+             tracked_capability.efficiency_rough_penalty,
+             tracked_capability.efficiency_rough_bonus);
+  }
+
   struct VehicleEvalContext
   {
-    int id;                  // 车辆类型 ID（传给 predictRobotPose 用）
-    const HeightGrid *model; // 指向该车型的高度/足迹模型（轮式/履带）
-    grid_map::Matrix *layer; // 输出层指针（traversability_fine_*）
-    std::string name;        // 用于日志
-
-    // 统计信息
+    int id = 0;
+    const HeightGrid *model = nullptr;
+    grid_map::Matrix *layer = nullptr;
+    const VehicleCapability *capability = nullptr;
+    std::string name;
+    int nominal_contact_points = 1;
     int count_success = 0;
     int count_collision = 0;
     int count_failure = 0;
@@ -2129,74 +2376,96 @@ void Mapping::finegrained_traversability_mapping()
   std::vector<VehicleEvalContext> vehicles;
   vehicles.reserve(2);
 
-  // -----------------------------------------------------
-  // [3] 注册车辆：检查模型是否加载、layer 是否存在，然后初始化输出层
-  // -----------------------------------------------------
-  auto registerVehicle = [&](int id, const HeightGrid &model, bool loaded,
-                             const std::string &layer_name, const std::string &name)
+  auto registerVehicle = [&](int id,
+                             const HeightGrid &model,
+                             bool loaded,
+                             const std::string &layer_name,
+                             const std::string &name,
+                             const VehicleCapability &capability)
   {
-    // 模型没加载（比如文件不存在/参数未配置）就跳过该车型
     if (!loaded)
     {
       return;
     }
-
-    // 输出 layer 不存在就跳过（避免 height_map_["xxx"] 抛错或创建失败）
     if (!height_map_.exists(layer_name))
     {
-      ROS_WARN("Grid map layer %s is missing; skipping fine-grained output for %s",
+      ROS_WARN("Grid map layer %s is missing; skipping %s",
                layer_name.c_str(), name.c_str());
       return;
     }
 
-    VehicleEvalContext ctx;
-    ctx.id = id;
-    ctx.model = &model;
+    VehicleEvalContext context;
+    context.id = id;
+    context.model = &model;
+    context.layer = &height_map_[layer_name];
+    context.capability = &capability;
+    context.name = name;
 
-    // 注意：这里把 layer 的矩阵指针保存下来，后面直接写矩阵
-    ctx.layer = &height_map_[layer_name];
+    double min_support_z = std::numeric_limits<double>::infinity();
+    for (int i = 0; i < robot_rows_; ++i)
+    {
+      for (int j = 0; j < robot_cols_; ++j)
+      {
+        if (!checkWheel(id, i, j) && std::isfinite(model.Z_(i, j)))
+        {
+          min_support_z = std::min(min_support_z, model.Z_(i, j));
+        }
+      }
+    }
 
-    ctx.name = name;
-    vehicles.push_back(std::move(ctx));
+    int nominal_contacts = 0;
+    if (std::isfinite(min_support_z))
+    {
+      for (int i = 0; i < robot_rows_; ++i)
+      {
+        for (int j = 0; j < robot_cols_; ++j)
+        {
+          if (!checkWheel(id, i, j) &&
+              std::isfinite(model.Z_(i, j)) &&
+              model.Z_(i, j) <=
+                  min_support_z + capability.touch_gap_threshold)
+          {
+            ++nominal_contacts;
+          }
+        }
+      }
+    }
+    context.nominal_contact_points = std::max(1, nominal_contacts);
+    vehicles.push_back(context);
   };
 
-  // 注册两种车型
-  registerVehicle(1, wheeled_model_, wheeled_model_loaded_, "traversability_fine_wheeled", "wheeled car");
-  registerVehicle(2, tracked_model_, tracked_model_loaded_, "traversability_fine_tracked", "tracked car");
+  registerVehicle(1, wheeled_model_, wheeled_model_loaded_,
+                  "traversability_fine_wheeled", "wheeled car",
+                  wheeled_capability);
+  registerVehicle(2, tracked_model_, tracked_model_loaded_,
+                  "traversability_fine_tracked", "tracked car",
+                  tracked_capability);
 
-  // 如果一个车型都没注册成功，则不做 fine
   if (vehicles.empty())
   {
-    ROS_WARN_THROTTLE(5.0, "Fine-grained traversability skipped: no vehicle models available");
+    ROS_WARN_THROTTLE(5.0,
+                      "Fine traversability skipped: no vehicle models");
     return;
   }
 
-  // =====================================================
-  // [3.5] 精细通过性诊断 CSV 记录
-  // =====================================================
-  // 此诊断逻辑用于记录导致两种车辆图层结果分歧（Diverge）的确切计算分支和数值。
-  // 它属于纯诊断工具，不会修改任何建图或评估结果。
-  static bool csv_configured = false; // CSV 参数与文件流是否已初始化配置
-  static bool csv_enabled = true;     // 是否启用 CSV 诊断记录功能
-  static bool csv_append = false;     // 是否以追加（Append）模式写入文件
-  static int csv_max_cycles = 50;     // 允许记录的最大循环周期数（避免文件过大）
-  static std::string csv_path;        // CSV 文件保存路径
-  static std::ofstream csv_stream;    // CSV 文件输出流
-  static std::size_t csv_cycle = 0;   // 当前已运行的循环周期计数
+  static bool csv_configured = false;
+  static bool csv_enabled = true;
+  static bool csv_append = false;
+  static int csv_max_cycles = 50;
+  static std::string csv_path;
+  static std::ofstream csv_stream;
+  static std::size_t csv_cycle = 0;
 
-  // 1. 初始化配置：仅在首次运行时配置 CSV 文件
   if (!csv_configured)
   {
     pnh_.param<bool>("enable_fine_debug_csv", csv_enabled, true);
     pnh_.param<bool>("fine_debug_csv_append", csv_append, false);
     pnh_.param<int>("fine_debug_csv_max_cycles", csv_max_cycles, 50);
 
-    // 获取 obstacle_mapping 软件包的绝对路径，并设置默认保存路径
     const std::string package_path =
         ros::package::getPath("obstacle_mapping");
     const std::string default_csv_path =
         package_path + "/fine_traversability_debug.csv";
-
     pnh_.param<std::string>("fine_debug_csv_path", csv_path,
                             default_csv_path);
     if (csv_path.empty())
@@ -2208,56 +2477,53 @@ void Mapping::finegrained_traversability_mapping()
     if (csv_enabled)
     {
       bool write_header = true;
-
-      // 如果设置为追加模式，先检查文件是否已存在且非空，以决定是否写入表头
       if (csv_append)
       {
         std::ifstream existing(csv_path);
-        write_header = !existing.good() || existing.peek() == std::ifstream::traits_type::eof();
+        write_header = !existing.good() ||
+                       existing.peek() == std::ifstream::traits_type::eof();
       }
 
-      // 根据追加或覆盖配置，设置文件打开模式
       const std::ios_base::openmode mode =
-          std::ios::out | (csv_append ? std::ios::app : std::ios::trunc);
+          std::ios::out |
+          (csv_append ? std::ios::app : std::ios::trunc);
       csv_stream.open(csv_path, mode);
 
       if (!csv_stream.is_open())
       {
-        ROS_ERROR("Failed to open fine traversability diagnostic CSV: %s",
+        ROS_ERROR("Failed to open fine traversability CSV: %s",
                   csv_path.c_str());
         csv_enabled = false;
       }
       else
       {
-        // 首次打开或新文件，写入 CSV 表头（列名）
         if (write_header)
         {
           csv_stream
               << "record_type,stamp_sec,cycle,vehicle_id,vehicle,"
               << "cell_x,cell_y,slope,roughness,step,coarse_cost,"
-              << "n_points,interpolated,heading_deg,pose_status,status,roll_deg,"
-              << "pitch_deg,contact_points,stable,final_cost,"
-              << "success_count,collision_count,failure_count,skipped_cells\n";
+              << "n_points,interpolated,heading_deg,pose_status,status,"
+              << "roll_deg,pitch_deg,contact_points,stable,"
+              << "raw_slope_deg,raw_roughness,raw_step_m,"
+              << "platform_geo_cost,pose_cost,support_ratio,"
+              << "success_headings,terrain_severity,efficiency_adjustment,"
+              << "final_cost,success_count,collision_count,"
+              << "failure_count,skipped_cells\n";
         }
-        // 设置浮点数输出精度为 9 位
         csv_stream << std::setprecision(9);
-        ROS_INFO("Fine traversability diagnostic CSV: %s (max_cycles=%d)",
+        ROS_INFO("Fine traversability CSV: %s (max_cycles=%d)",
                  csv_path.c_str(), csv_max_cycles);
       }
     }
-
     csv_configured = true;
   }
 
-  // 2. 更新运行周期状态
   ++csv_cycle;
-  // 判断当前周期是否需要进行记录：需满足“启用、文件成功打开、且未超出最大记录周期数”
   const bool record_this_cycle =
       csv_enabled && csv_stream.is_open() &&
       csv_cycle <= static_cast<std::size_t>(csv_max_cycles);
-  const double csv_stamp = ros::Time::now().toSec(); // 获取当前 ROS 时间戳（秒）
+  const double csv_stamp = ros::Time::now().toSec();
 
-  // 3. 定义用于写入单个栅格评估记录的 Lambda 辅助函数
   auto writeCellRecord = [&](const VehicleEvalContext &vehicle,
                              const grid_map::Position &position,
                              float slope_value,
@@ -2273,147 +2539,231 @@ void Mapping::finegrained_traversability_mapping()
                              double pitch_deg,
                              int contact_points,
                              int stable,
-                             float final_cost)
+                             double raw_slope_deg,
+                             double raw_roughness,
+                             double raw_step_m,
+                             double platform_geo_cost,
+                             double pose_cost,
+                             double support_ratio,
+                             int success_headings,
+                             double terrain_severity,
+                             double efficiency_adjustment,
+                             double final_cost)
   {
-    // 如果当前周期不满足记录条件，直接返回
     if (!record_this_cycle)
     {
       return;
     }
 
-    // 将该栅格的所有精细评估指标、状态值及姿态参数写入 CSV 文件
-    // 注意：行末有连续逗号，是为汇总类型记录（如 summary）保留的占位符（对应 success_count 等列）
     csv_stream << "cell," << csv_stamp << ',' << csv_cycle << ','
                << vehicle.id << ',' << vehicle.name << ','
                << position.x() << ',' << position.y() << ','
                << slope_value << ',' << roughness_value << ','
                << step_value << ',' << coarse_value << ','
                << n_points_value << ',' << interpolated_value << ','
-               << heading_deg << ','
-               << pose_status << ',' << status << ','
+               << heading_deg << ',' << pose_status << ',' << status << ','
                << roll_deg << ',' << pitch_deg << ','
                << contact_points << ',' << stable << ','
-               << final_cost << ",,,,\n";
+               << raw_slope_deg << ',' << raw_roughness << ','
+               << raw_step_m << ',' << platform_geo_cost << ','
+               << pose_cost << ',' << support_ratio << ','
+               << success_headings << ',' << terrain_severity << ','
+               << efficiency_adjustment << ',' << final_cost << ",,,,\n";
   };
 
-  // =====================================================
-  // [4] 获取车辆当前位姿快照（位置 + 朝向），用于确定评估区域和 yaw
-  // =====================================================
   Eigen::Vector3d current_pos;
   Eigen::Quaterniond current_orientation;
   {
     std::lock_guard<std::mutex> pose_lock(vehicle_pose_mutex_);
     current_pos = vehicle_position_;
-    current_orientation = vehicle_orientation_; // 拿一个一致的姿态快照
+    current_orientation = vehicle_orientation_;
   }
 
-  // -----------------------------------------------------
-  // [5] 配置半圆航向采样
-  // -----------------------------------------------------
-  // 车辆前后方向对称，因此只在 [0, pi) 范围内采样。
-  // 4个采样方向分别为 0°、45°、90°、135°。
-  // 180°与0°等价，不重复计算。
-  tf::Quaternion q_vehicle(current_orientation.x(), current_orientation.y(), current_orientation.z(), current_orientation.w());
-
+  tf::Quaternion q_vehicle(current_orientation.x(),
+                           current_orientation.y(),
+                           current_orientation.z(),
+                           current_orientation.w());
   const double yaw_angle = tf::getYaw(q_vehicle);
 
   static bool fine_pose_configured = false;
   static int fine_heading_samples = 4;
-
   if (!fine_pose_configured)
   {
     pnh_.param<int>("fine_heading_samples", fine_heading_samples, 4);
-
     fine_heading_samples = std::max(1, fine_heading_samples);
-
     fine_pose_configured = true;
-
     ROS_INFO("Fine traversability heading samples: %d",
              fine_heading_samples);
   }
 
   const Eigen::Vector3d z_axis(0.0, 0.0, 1.0);
-
   int count_skipped = 0;
 
-  // =====================================================
-  // [6] 遍历车周围 max_range_ 圆形区域的所有 cell
-  // =====================================================
-  for (grid_map::CircleIterator it(height_map_, grid_map::Position(current_pos.x(), current_pos.y()), max_range_);
+  struct PlatformCellMetrics
+  {
+    double slope_ratio = 0.0;
+    double roughness_ratio = 0.0;
+    double step_ratio = 0.0;
+    double geo_cost = 0.0;
+    double efficiency_adjustment = 0.0;
+    double base_cost = 0.0;
+    bool critical = false;
+  };
+
+  auto inBand = [](double value, double minimum, double maximum)
+  {
+    return value >= minimum && value <= maximum;
+  };
+
+  for (grid_map::CircleIterator it(
+           height_map_,
+           grid_map::Position(current_pos.x(), current_pos.y()),
+           max_range_);
        !it.isPastEnd(); ++it)
   {
-    grid_map::Index idx = *it;
-
-    // 当前处理范围先以粗粒度结果作为默认值。只更新当前范围，避免
-    // 整图复制覆盖车辆此前已经完成的历史精细校核结果。
-    const float coarse_value = traversability(idx(0), idx(1));
-    for (auto &vehicle : vehicles)
-    {
-      (*(vehicle.layer))(idx(0), idx(1)) = coarse_value;
-    }
+    const grid_map::Index idx = *it;
     critical_layer(idx(0), idx(1)) = 0.0f;
 
-    const float slope_val = slope_layer(idx(0), idx(1));
-    const float roughness_val = roughness_layer(idx(0), idx(1));
-    const float step_val = step_layer(idx(0), idx(1));
-    const float n_points_val = n_points_layer(idx(0), idx(1));
-    const float interpolated_val = interpolated_layer(idx(0), idx(1));
+    const float coarse_value = traversability(idx(0), idx(1));
+    const float slope_value = slope_layer(idx(0), idx(1));
+    const float roughness_value = roughness_layer(idx(0), idx(1));
+    const float step_value = step_layer(idx(0), idx(1));
+    const float raw_slope_deg = slope_deg_layer(idx(0), idx(1));
+    const float raw_roughness = roughness_raw_layer(idx(0), idx(1));
+    const float raw_step_m = step_height_layer(idx(0), idx(1));
+    const float n_points_value = n_points_layer(idx(0), idx(1));
+    const float interpolated_value = interpolated_layer(idx(0), idx(1));
 
-    // Unknown or incomplete coarse cells must remain unknown.  In particular,
-    // do not turn a missing step/coarse value into a valid platform cost.
-    if (!std::isfinite(slope_val) ||
-        !std::isfinite(roughness_val) ||
-        !std::isfinite(step_val) ||
-        !std::isfinite(coarse_value))
+    if (!std::isfinite(coarse_value) ||
+        !std::isfinite(slope_value) ||
+        !std::isfinite(roughness_value) ||
+        !std::isfinite(step_value) ||
+        !std::isfinite(raw_slope_deg) ||
+        !std::isfinite(raw_roughness) ||
+        !std::isfinite(raw_step_m))
     {
       ++count_skipped;
       continue;
     }
 
-    // A cell is refined when at least one coarse indicator lies in its
-    // configured critical band.  This makes every fine_*_min/max launch
-    // parameter effective while leaving clearly non-critical cells unchanged.
-    const bool traversability_critical =
-        coarse_value >= fine_trav_min_ &&
-        coarse_value <= fine_trav_max_;
-    const bool slope_critical =
-        slope_val >= fine_slope_min_ &&
-        slope_val <= fine_slope_max_;
-    const bool roughness_critical =
-        roughness_val >= fine_roughness_min_ &&
-        roughness_val <= fine_roughness_max_;
+    const double slope_severity =
+        clamp01(raw_slope_deg / efficiency_slope_reference_deg);
+    const double roughness_severity =
+        clamp01(raw_roughness / efficiency_roughness_reference);
+    const double step_severity =
+        clamp01(raw_step_m / efficiency_step_reference_m);
+    const double terrain_severity = clamp01(
+        severity_slope_weight * slope_severity +
+        severity_roughness_weight * roughness_severity +
+        severity_step_weight * step_severity);
 
-    if (!(traversability_critical || slope_critical || roughness_critical))
+    std::vector<PlatformCellMetrics> metrics(vehicles.size());
+    bool any_platform_critical = false;
+
+    for (std::size_t vehicle_index = 0;
+         vehicle_index < vehicles.size(); ++vehicle_index)
+    {
+      const VehicleCapability &capability =
+          *vehicles[vehicle_index].capability;
+      PlatformCellMetrics &cell_metrics = metrics[vehicle_index];
+
+      cell_metrics.slope_ratio =
+          raw_slope_deg / capability.slope_limit_deg;
+      cell_metrics.roughness_ratio =
+          raw_roughness / capability.roughness_limit;
+      cell_metrics.step_ratio =
+          raw_step_m / capability.step_limit_m;
+
+      const bool capability_exceeded =
+          cell_metrics.slope_ratio >= 1.0 ||
+          cell_metrics.roughness_ratio >= 1.0 ||
+          cell_metrics.step_ratio >= 1.0;
+
+      if (capability_exceeded)
+      {
+        cell_metrics.geo_cost = 1.0;
+      }
+      else
+      {
+        cell_metrics.geo_cost = clamp01(
+            capability.geo_slope_weight *
+                clamp01(cell_metrics.slope_ratio) +
+            capability.geo_roughness_weight *
+                clamp01(cell_metrics.roughness_ratio) +
+            capability.geo_step_weight *
+                clamp01(cell_metrics.step_ratio));
+      }
+
+      // d=0 表示平坦地形，d=1 表示达到效率参考上限的复杂地形。
+      // 修正量允许为负：轮式在复杂地形加罚，履带在复杂地形获益。
+      // 但最终结果始终不低于平台几何代价，因此不会降低硬障碍。
+      cell_metrics.efficiency_adjustment = efficiency_weight * (
+          capability.efficiency_flat_penalty *
+              (1.0 - terrain_severity) +
+          capability.efficiency_rough_penalty * terrain_severity -
+          capability.efficiency_rough_bonus * terrain_severity);
+
+      const double adjusted_geometry_cost = clamp01(
+          cell_metrics.geo_cost +
+          cell_metrics.efficiency_adjustment);
+      cell_metrics.base_cost =
+          cell_metrics.geo_cost >= 1.0
+              ? 1.0
+              : std::max(cell_metrics.geo_cost,
+                         adjusted_geometry_cost);
+
+      cell_metrics.critical =
+          inBand(cell_metrics.geo_cost,
+                 fine_trav_min_, fine_trav_max_) ||
+          inBand(cell_metrics.slope_ratio,
+                 fine_slope_min_, fine_slope_max_) ||
+          inBand(cell_metrics.roughness_ratio,
+                 fine_roughness_min_, fine_roughness_max_) ||
+          inBand(cell_metrics.step_ratio,
+                 fine_step_min, fine_step_max);
+
+      (*(vehicles[vehicle_index].layer))(idx(0), idx(1)) =
+          static_cast<float>(cell_metrics.base_cost);
+      any_platform_critical =
+          any_platform_critical || cell_metrics.critical;
+    }
+
+    if (!any_platform_critical)
     {
       ++count_skipped;
       continue;
     }
 
-    grid_map::Position pos;
-    if (!height_map_.getPosition(idx, pos))
+    grid_map::Position position;
+    if (!height_map_.getPosition(idx, position))
     {
       ++count_skipped;
       continue;
     }
-
-    // 标记该 cell 被纳入了 fine 检查（critical=1）
     critical_layer(idx(0), idx(1)) = 1.0f;
 
-    // ===================================================
-    // [6.2] 对每一种车型做“落脚姿态预测”
-    // ===================================================
-    for (auto &vehicle : vehicles)
+    // 使用两种平台关键集合的并集；一旦任一平台处于关键区，
+    // 两种车型都执行姿态校核，保证输出与CSV始终可成对比较。
+    for (std::size_t vehicle_index = 0;
+         vehicle_index < vehicles.size(); ++vehicle_index)
     {
+      VehicleEvalContext &vehicle = vehicles[vehicle_index];
+      const VehicleCapability &capability = *vehicle.capability;
+      const PlatformCellMetrics &cell_metrics = metrics[vehicle_index];
+
       bool has_success = false;
       bool has_unstable = false;
       int collision_headings = 0;
+      int success_headings = 0;
 
-      float best_cost = 1.0f;
+      double best_partial_pose_cost =
+          std::numeric_limits<double>::infinity();
       double best_roll = 0.0;
       double best_pitch = 0.0;
       double best_heading_deg = 0.0;
       int best_contact_points = 0;
       int best_stable = 0;
+      double best_support_ratio = 0.0;
 
       double diagnostic_roll = 0.0;
       double diagnostic_pitch = 0.0;
@@ -2422,47 +2772,68 @@ void Mapping::finegrained_traversability_mapping()
       int diagnostic_stable = 0;
       int diagnostic_status = kPoseFailure;
 
-      const double roll_norm = std::max(1e-3, fine_roll_threshold_deg_);
-      const double pitch_norm = std::max(1e-3, fine_pitch_threshold_deg_);
-
       for (int heading_index = 0;
-           heading_index < fine_heading_samples;
-           ++heading_index)
+           heading_index < fine_heading_samples; ++heading_index)
       {
-        // A single sample retains the measured vehicle yaw for backward
-        // compatibility.  Multiple samples use fixed global headings so the
-        // stored global traversability layer does not change when the robot
-        // itself turns.
-        const double heading = fine_heading_samples == 1 ? yaw_angle
-                                                         : (M_PI * static_cast<double>(heading_index) / static_cast<double>(fine_heading_samples));
-
+        const double heading =
+            fine_heading_samples == 1
+                ? yaw_angle
+                : M_PI * static_cast<double>(heading_index) /
+                      static_cast<double>(fine_heading_samples);
         const double heading_deg = heading * 180.0 / M_PI;
-        const Eigen::Matrix3d heading_rotation = Eigen::AngleAxisd(heading, z_axis).toRotationMatrix();
+        const Eigen::Matrix3d heading_rotation =
+            Eigen::AngleAxisd(heading, z_axis).toRotationMatrix();
 
         double roll = 0.0;
         double pitch = 0.0;
         int contact_points = 0;
         int is_stable = 0;
-        const int pose_status = predictRobotPose(idx, roll, pitch, contact_points, is_stable,
-                                                 heading_rotation, *vehicle.model, vehicle.id);
+        const int pose_status = predictRobotPose(
+            idx, roll, pitch, contact_points, is_stable,
+            heading_rotation, *vehicle.model, vehicle.id);
 
-        if (pose_status == kPoseSuccess && is_stable != 0 && std::isfinite(roll) && std::isfinite(pitch))
+        if (pose_status == kPoseSuccess && is_stable != 0 &&
+            std::isfinite(roll) && std::isfinite(pitch))
         {
-          const double roll_cost = std::min(1.0, std::fabs(roll) / roll_norm);
+          // 横滚或俯仰超过该车型能力时，该方向不可行，不能继续记为success。
+          if (std::fabs(roll) > capability.roll_limit_deg ||
+              std::fabs(pitch) > capability.pitch_limit_deg)
+          {
+            has_unstable = true;
+            diagnostic_roll = roll;
+            diagnostic_pitch = pitch;
+            diagnostic_heading_deg = heading_deg;
+            diagnostic_contacts = contact_points;
+            diagnostic_stable = 0;
+            diagnostic_status = kPoseUnstable;
+            continue;
+          }
 
-          const double pitch_cost = std::min(1.0, std::fabs(pitch) / pitch_norm);
+          ++success_headings;
+          const double roll_cost =
+              clamp01(std::fabs(roll) / capability.roll_limit_deg);
+          const double pitch_cost =
+              clamp01(std::fabs(pitch) / capability.pitch_limit_deg);
+          const double angle_cost = std::max(roll_cost, pitch_cost);
+          const double support_ratio = clamp01(
+              static_cast<double>(contact_points) /
+              static_cast<double>(vehicle.nominal_contact_points));
+          const double support_cost = 1.0 - support_ratio;
+          const double partial_pose_cost =
+              pose_angle_weight * angle_cost +
+              pose_support_weight * support_cost;
 
-          const float fine_cost = static_cast<float>(0.5 * (roll_cost + pitch_cost));
-
-          if (!has_success || fine_cost < best_cost)
+          if (!has_success ||
+              partial_pose_cost < best_partial_pose_cost)
           {
             has_success = true;
-            best_cost = fine_cost;
+            best_partial_pose_cost = partial_pose_cost;
             best_roll = roll;
             best_pitch = pitch;
             best_heading_deg = heading_deg;
             best_contact_points = contact_points;
             best_stable = is_stable;
+            best_support_ratio = support_ratio;
           }
         }
         else if (pose_status == kPoseCollision)
@@ -2488,85 +2859,134 @@ void Mapping::finegrained_traversability_mapping()
           diagnostic_stable = is_stable;
           diagnostic_status = pose_status;
         }
-        else
+        else if (!has_unstable)
         {
-          // A failed heading is kept as diagnostic state.  The cell retains
-          // its coarse value only when no sampled heading succeeds and no
-          // sampled heading proves it unstable.
-          if (!has_unstable)
-          {
-            diagnostic_roll = roll;
-            diagnostic_pitch = pitch;
-            diagnostic_heading_deg = heading_deg;
-            diagnostic_contacts = contact_points;
-            diagnostic_stable = is_stable;
-            diagnostic_status = kPoseFailure;
-          }
+          diagnostic_roll = roll;
+          diagnostic_pitch = pitch;
+          diagnostic_heading_deg = heading_deg;
+          diagnostic_contacts = contact_points;
+          diagnostic_stable = is_stable;
+          diagnostic_status = kPoseFailure;
         }
       }
 
       if (has_success)
       {
         ++vehicle.count_success;
-        // Per the selected method, a valid refined cost directly replaces the
-        // coarse default for this platform-specific layer.
-        (*(vehicle.layer))(idx(0), idx(1)) = best_cost;
-        writeCellRecord(vehicle, pos, slope_val, roughness_val, step_val,
-                        coarse_value, n_points_val, interpolated_val,
-                        best_heading_deg, kPoseSuccess, "success",
-                        best_roll, best_pitch, best_contact_points,
-                        best_stable, best_cost);
+        const double heading_cost = 1.0 - clamp01(
+            static_cast<double>(success_headings) /
+            static_cast<double>(fine_heading_samples));
+        const double pose_cost = clamp01(
+            best_partial_pose_cost +
+            pose_heading_weight * heading_cost);
+        const double traversability_risk =
+            std::max(cell_metrics.geo_cost, pose_cost);
+        const double adjusted_risk = clamp01(
+            traversability_risk +
+            cell_metrics.efficiency_adjustment);
+        const double final_cost =
+            cell_metrics.geo_cost >= 1.0
+                ? 1.0
+                : std::max(cell_metrics.geo_cost, adjusted_risk);
+
+        (*(vehicle.layer))(idx(0), idx(1)) =
+            static_cast<float>(final_cost);
+
+        writeCellRecord(
+            vehicle, position,
+            slope_value, roughness_value, step_value, coarse_value,
+            n_points_value, interpolated_value,
+            best_heading_deg, kPoseSuccess, "success",
+            best_roll, best_pitch, best_contact_points, best_stable,
+            raw_slope_deg, raw_roughness, raw_step_m,
+            cell_metrics.geo_cost, pose_cost, best_support_ratio,
+            success_headings, terrain_severity,
+            cell_metrics.efficiency_adjustment, final_cost);
       }
       else if (collision_headings == fine_heading_samples)
       {
         ++vehicle.count_collision;
         (*(vehicle.layer))(idx(0), idx(1)) = 1.0f;
-        writeCellRecord(vehicle, pos, slope_val, roughness_val, step_val,
-                        coarse_value, n_points_val, interpolated_val,
-                        diagnostic_heading_deg, kPoseCollision,
-                        "collision_all_headings", diagnostic_roll,
-                        diagnostic_pitch, diagnostic_contacts,
-                        diagnostic_stable, 1.0f);
+        const double support_ratio = clamp01(
+            static_cast<double>(diagnostic_contacts) /
+            static_cast<double>(vehicle.nominal_contact_points));
+
+        writeCellRecord(
+            vehicle, position,
+            slope_value, roughness_value, step_value, coarse_value,
+            n_points_value, interpolated_value,
+            diagnostic_heading_deg, kPoseCollision,
+            "collision_all_headings",
+            diagnostic_roll, diagnostic_pitch,
+            diagnostic_contacts, diagnostic_stable,
+            raw_slope_deg, raw_roughness, raw_step_m,
+            cell_metrics.geo_cost, 1.0, support_ratio, 0,
+            terrain_severity, cell_metrics.efficiency_adjustment, 1.0);
       }
       else if (has_unstable)
       {
         ++vehicle.count_failure;
         (*(vehicle.layer))(idx(0), idx(1)) = 1.0f;
-        writeCellRecord(vehicle, pos, slope_val, roughness_val, step_val,
-                        coarse_value, n_points_val, interpolated_val,
-                        diagnostic_heading_deg, kPoseUnstable, "unstable",
-                        diagnostic_roll, diagnostic_pitch,
-                        diagnostic_contacts, 0, 1.0f);
+        const double support_ratio = clamp01(
+            static_cast<double>(diagnostic_contacts) /
+            static_cast<double>(vehicle.nominal_contact_points));
+
+        writeCellRecord(
+            vehicle, position,
+            slope_value, roughness_value, step_value, coarse_value,
+            n_points_value, interpolated_value,
+            diagnostic_heading_deg, kPoseUnstable, "unstable",
+            diagnostic_roll, diagnostic_pitch,
+            diagnostic_contacts, 0,
+            raw_slope_deg, raw_roughness, raw_step_m,
+            cell_metrics.geo_cost, 1.0, support_ratio,
+            success_headings, terrain_severity,
+            cell_metrics.efficiency_adjustment, 1.0);
       }
       else
       {
         ++vehicle.count_failure;
-        writeCellRecord(vehicle, pos, slope_val, roughness_val, step_val,
-                        coarse_value, n_points_val, interpolated_val,
-                        diagnostic_heading_deg, diagnostic_status,
-                        "failure_keep_coarse", diagnostic_roll,
-                        diagnostic_pitch, diagnostic_contacts,
-                        diagnostic_stable, coarse_value);
+        (*(vehicle.layer))(idx(0), idx(1)) =
+            static_cast<float>(cell_metrics.base_cost);
+        const double support_ratio = clamp01(
+            static_cast<double>(diagnostic_contacts) /
+            static_cast<double>(vehicle.nominal_contact_points));
+        const double no_pose =
+            std::numeric_limits<double>::quiet_NaN();
+
+        writeCellRecord(
+            vehicle, position,
+            slope_value, roughness_value, step_value, coarse_value,
+            n_points_value, interpolated_value,
+            diagnostic_heading_deg, diagnostic_status,
+            "failure_keep_platform_base",
+            diagnostic_roll, diagnostic_pitch,
+            diagnostic_contacts, diagnostic_stable,
+            raw_slope_deg, raw_roughness, raw_step_m,
+            cell_metrics.geo_cost, no_pose, support_ratio,
+            success_headings, terrain_severity,
+            cell_metrics.efficiency_adjustment, cell_metrics.base_cost);
       }
     }
   }
 
-  // =====================================================
-  // [7] 打印统计信息：看看有多少 cell 被跳过、成功/碰撞/失败各多少
-  // =====================================================
-  ROS_INFO("Fine-grained traversability mapping statistics:");
-  ROS_INFO("  - Skipped (filter criteria not met): %d cells", count_skipped);
+  ROS_INFO("Platform traversability statistics:");
+  ROS_INFO("  Skipped cells: %d", count_skipped);
   for (const auto &vehicle : vehicles)
   {
-    ROS_INFO("  - %s => success: %d, collision: %d, failure: %d",
-             vehicle.name.c_str(), vehicle.count_success, vehicle.count_collision, vehicle.count_failure);
+    ROS_INFO("  %s => success=%d, collision=%d, failure=%d, nominal_contacts=%d",
+             vehicle.name.c_str(),
+             vehicle.count_success,
+             vehicle.count_collision,
+             vehicle.count_failure,
+             vehicle.nominal_contact_points);
 
     if (record_this_cycle)
     {
       csv_stream << "summary," << csv_stamp << ',' << csv_cycle << ','
                  << vehicle.id << ',' << vehicle.name;
-      // Fields 6--21 are cell-level values and are not applicable here.
-      for (int field = 6; field <= 21; ++field)
+      // Fields 6--30 are cell-level values.
+      for (int field = 6; field <= 30; ++field)
       {
         csv_stream << ",nan";
       }
@@ -2582,7 +3002,7 @@ void Mapping::finegrained_traversability_mapping()
     csv_stream.flush();
     if (csv_cycle == static_cast<std::size_t>(csv_max_cycles))
     {
-      ROS_INFO("Fine traversability diagnostic CSV reached %d cycles: %s",
+      ROS_INFO("Fine traversability CSV reached %d cycles: %s",
                csv_max_cycles, csv_path.c_str());
     }
   }
@@ -2606,7 +3026,12 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
   static bool pose_limits_configured = false;
   static int fine_min_support_points = 3;
   static double fine_max_rotation_step_deg = 5.0;
-  static double fine_max_pose_tilt_deg = 60.0;
+  static double wheeled_max_pose_tilt_deg = 40.0;
+  static double tracked_max_pose_tilt_deg = 45.0;
+  static double wheeled_touch_gap_threshold = 0.05;
+  static double tracked_touch_gap_threshold = 0.05;
+  static double wheeled_collision_clearance = 0.10;
+  static double tracked_collision_clearance = 0.08;
 
   if (!pose_limits_configured)
   {
@@ -2616,8 +3041,18 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
     pnh_.param<double>("fine_max_rotation_step_deg",
                        fine_max_rotation_step_deg, 5.0);
 
-    pnh_.param<double>("fine_max_pose_tilt_deg",
-                       fine_max_pose_tilt_deg, 60.0);
+    pnh_.param<double>("wheeled_max_pose_tilt_deg",
+                       wheeled_max_pose_tilt_deg, 40.0);
+    pnh_.param<double>("tracked_max_pose_tilt_deg",
+                       tracked_max_pose_tilt_deg, 45.0);
+    pnh_.param<double>("wheeled_touch_gap_threshold",
+                       wheeled_touch_gap_threshold, touch_gap_threshold_);
+    pnh_.param<double>("tracked_touch_gap_threshold",
+                       tracked_touch_gap_threshold, touch_gap_threshold_);
+    pnh_.param<double>("wheeled_collision_clearance",
+                       wheeled_collision_clearance, collision_gap_threshold_);
+    pnh_.param<double>("tracked_collision_clearance",
+                       tracked_collision_clearance, collision_gap_threshold_);
 
     fine_min_support_points =
         std::max(3, fine_min_support_points);
@@ -2627,13 +3062,31 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
                  std::min(30.0,
                           fine_max_rotation_step_deg));
 
-    fine_max_pose_tilt_deg =
-        std::max(1.0,
-                 std::min(89.0,
-                          fine_max_pose_tilt_deg));
+    wheeled_max_pose_tilt_deg =
+        std::max(1.0, std::min(89.0, wheeled_max_pose_tilt_deg));
+    tracked_max_pose_tilt_deg =
+        std::max(1.0, std::min(89.0, tracked_max_pose_tilt_deg));
+    wheeled_touch_gap_threshold =
+        std::max(1e-4, wheeled_touch_gap_threshold);
+    tracked_touch_gap_threshold =
+        std::max(1e-4, tracked_touch_gap_threshold);
+    wheeled_collision_clearance =
+        std::max(0.0, wheeled_collision_clearance);
+    tracked_collision_clearance =
+        std::max(0.0, tracked_collision_clearance);
 
     pose_limits_configured = true;
   }
+
+  const double pose_max_tilt_deg =
+      vehicle_type == 2 ? tracked_max_pose_tilt_deg
+                        : wheeled_max_pose_tilt_deg;
+  const double pose_touch_gap_threshold =
+      vehicle_type == 2 ? tracked_touch_gap_threshold
+                        : wheeled_touch_gap_threshold;
+  const double pose_collision_clearance =
+      vehicle_type == 2 ? tracked_collision_clearance
+                        : wheeled_collision_clearance;
 
   grid_map::Position center_pos;
 
@@ -2795,7 +3248,7 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
     }
 
     const double max_tilt_rad =
-        fine_max_pose_tilt_deg *
+        pose_max_tilt_deg *
         M_PI / 180.0;
 
     return body_up.normalized().z() <
@@ -3058,7 +3511,7 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
             checkWheel(vehicle_type, i, j);
 
         if (!collision_sensitive &&
-            gap <= touch_gap_threshold_)
+            gap <= pose_touch_gap_threshold)
         {
           ++contact_points;
 
@@ -3074,7 +3527,7 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
         }
 
         if (collision_sensitive &&
-            gap < collision_gap_threshold_)
+            gap < pose_collision_clearance)
         {
           collision = true;
         }
@@ -3483,7 +3936,7 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
             gap_map(i, j);
 
         if (!std::isfinite(gap) ||
-            gap <= touch_gap_threshold_)
+            gap <= pose_touch_gap_threshold)
         {
           continue;
         }
@@ -3519,7 +3972,7 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
 
         const double remaining_gap =
             gap -
-            touch_gap_threshold_;
+            pose_touch_gap_threshold;
 
         const double candidate_step =
             remaining_gap /
@@ -4547,6 +5000,9 @@ void Mapping::publishGridMap()
       "slope",
       "roughness",
       "step",
+      "slope_deg",
+      "roughness_raw",
+      "step_height",
       "traversability",
       "traversability_fine_wheeled",
       "traversability_fine_tracked",
@@ -4630,6 +5086,9 @@ bool Mapping::buildGridMapMessage(grid_map_msgs::GridMap &message)
       "slope",
       "roughness",
       "step",
+      "slope_deg",
+      "roughness_raw",
+      "step_height",
       "traversability",
       "traversability_fine_wheeled",
       "traversability_fine_tracked",

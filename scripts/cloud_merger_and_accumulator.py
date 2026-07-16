@@ -161,7 +161,7 @@ class CloudMergerAndAccumulator:
         # self.topic_registered_scan = rospy.get_param(
         #     "~registered_scan", "registered_scan_filted"
         # )
-        self.topic_registered_scan = "/registered_point_cloud"
+        self.topic_registered_scan = "/registered_scan"
 
         self.topic_terrain_merged = rospy.get_param(
             "~terrain_merged_out", "terrain_map_merged"
