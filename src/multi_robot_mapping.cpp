@@ -1,5 +1,5 @@
 /**
- * @description: Multi-robot mapping node implementation
+ * @description: Multi-robot mapping node with conditional startup blind-spot completion
  * @filename: multi_robot_mapping.cpp
  * @author: wangxurui
  * @date: 2026-01-28
@@ -16,6 +16,229 @@
 #include <set>
 #include <utility>
 #include <stdexcept>
+#include <cmath>
+
+namespace
+{
+enum class StartupHoleFillResult
+{
+  kNoHole,
+  kFilled,
+  kNotClosed,
+  kTooLarge,
+  kInsufficientBoundary,
+  kInvalidMap
+};
+
+/**
+ * @brief Fill only a small, closed unknown component containing the initial
+ *        vehicle position.
+ *
+ * The 16-beam lidar may leave a near-field blind spot around the starting
+ * pose.  This function deliberately does not fill an arbitrary circle.  It
+ * first performs an 8-connected flood fill on invalid elevation_BGK cells.
+ * The component is accepted only when it is completely enclosed by valid
+ * terrain, remains inside search_radius, is small enough, and has enough
+ * valid boundary cells.  A plane fitted to the boundary is then used to fill
+ * the missing elevation while n_points remains zero (the values are inferred,
+ * not real lidar observations).
+ */
+StartupHoleFillResult fillClosedStartupHole(
+    grid_map::GridMap &map,
+    const grid_map::Position &initial_position,
+    double search_radius,
+    std::size_t max_hole_cells,
+    std::size_t min_boundary_cells,
+    double recompute_radius,
+    std::size_t &filled_cell_count)
+{
+  filled_cell_count = 0;
+
+  if (!map.exists("elevation_BGK") ||
+      !map.exists("interpolated") ||
+      search_radius <= map.getResolution())
+  {
+    return StartupHoleFillResult::kInvalidMap;
+  }
+
+  grid_map::Index seed;
+  if (!map.getIndex(initial_position, seed))
+  {
+    return StartupHoleFillResult::kInvalidMap;
+  }
+
+  auto &elevation_bgk = map["elevation_BGK"];
+  if (std::isfinite(elevation_bgk(seed(0), seed(1))))
+  {
+    // The initial position is already covered (typical for the 32-beam lidar).
+    return StartupHoleFillResult::kNoHole;
+  }
+
+  const grid_map::Size map_size = map.getSize();
+  const auto in_bounds = [&map_size](int row, int col)
+  {
+    return row >= 0 && col >= 0 &&
+           row < map_size(0) && col < map_size(1);
+  };
+
+  const std::array<std::pair<int, int>, 8> neighbors = {{
+      {-1, -1}, {-1, 0}, {-1, 1}, {0, -1},
+      {0, 1}, {1, -1}, {1, 0}, {1, 1}}};
+
+  std::queue<grid_map::Index> pending;
+  std::set<std::pair<int, int>> hole_cells;
+  std::set<std::pair<int, int>> boundary_cells;
+  pending.push(seed);
+  hole_cells.insert({seed(0), seed(1)});
+
+  bool touches_search_boundary = false;
+
+  while (!pending.empty())
+  {
+    const grid_map::Index current = pending.front();
+    pending.pop();
+
+    for (const auto &offset : neighbors)
+    {
+      const int row = current(0) + offset.first;
+      const int col = current(1) + offset.second;
+
+      if (!in_bounds(row, col))
+      {
+        touches_search_boundary = true;
+        continue;
+      }
+
+      const grid_map::Index neighbor(row, col);
+      const float height = elevation_bgk(row, col);
+      if (std::isfinite(height))
+      {
+        boundary_cells.insert({row, col});
+        continue;
+      }
+
+      grid_map::Position position;
+      if (!map.getPosition(neighbor, position))
+      {
+        touches_search_boundary = true;
+        continue;
+      }
+
+      if ((position - initial_position).norm() > search_radius)
+      {
+        // The unknown component continues outside the protected startup area,
+        // so it is open/unexplored space rather than a closed lidar blind spot.
+        touches_search_boundary = true;
+        continue;
+      }
+
+      if (hole_cells.insert({row, col}).second)
+      {
+        if (hole_cells.size() > max_hole_cells)
+        {
+          return StartupHoleFillResult::kTooLarge;
+        }
+        pending.push(neighbor);
+      }
+    }
+  }
+
+  if (touches_search_boundary)
+  {
+    return StartupHoleFillResult::kNotClosed;
+  }
+
+  if (boundary_cells.size() < min_boundary_cells)
+  {
+    return StartupHoleFillResult::kInsufficientBoundary;
+  }
+
+  // Fit z = ax + by + c to the valid ring around the hole.  This preserves a
+  // local slope and is safer than assigning a constant traversability value.
+  Eigen::MatrixXd A(boundary_cells.size(), 3);
+  Eigen::VectorXd z(boundary_cells.size());
+  double min_boundary_z = std::numeric_limits<double>::infinity();
+  double max_boundary_z = -std::numeric_limits<double>::infinity();
+
+  Eigen::Index sample = 0;
+  for (const auto &cell : boundary_cells)
+  {
+    const grid_map::Index index(cell.first, cell.second);
+    grid_map::Position position;
+    if (!map.getPosition(index, position))
+    {
+      return StartupHoleFillResult::kInvalidMap;
+    }
+
+    const double height = elevation_bgk(cell.first, cell.second);
+    A.row(sample) << position.x(), position.y(), 1.0;
+    z(sample) = height;
+    min_boundary_z = std::min(min_boundary_z, height);
+    max_boundary_z = std::max(max_boundary_z, height);
+    ++sample;
+  }
+
+  const Eigen::Vector3d plane = A.colPivHouseholderQr().solve(z);
+  if (!plane.allFinite())
+  {
+    return StartupHoleFillResult::kInvalidMap;
+  }
+
+  auto &interpolated = map["interpolated"];
+  for (const auto &cell : hole_cells)
+  {
+    const grid_map::Index index(cell.first, cell.second);
+    grid_map::Position position;
+    if (!map.getPosition(index, position))
+    {
+      continue;
+    }
+
+    double predicted_z = plane.x() * position.x() +
+                         plane.y() * position.y() + plane.z();
+    // Prevent a poorly conditioned fit from creating a peak or pit inside the
+    // repaired region.
+    predicted_z = std::max(min_boundary_z,
+                           std::min(max_boundary_z, predicted_z));
+
+    elevation_bgk(cell.first, cell.second) =
+        static_cast<float>(predicted_z);
+    interpolated(cell.first, cell.second) = 1.0f;
+    ++filled_cell_count;
+  }
+
+  // A repair can change the neighborhood used by slope/step computation.  If
+  // an earlier frame already evaluated nearby cells in incremental mode, mark
+  // them for recomputation in the current pipeline.
+  const std::array<const char *, 3> computed_layers = {{
+      "incremental_geom_computed",
+      "incremental_step_computed",
+      "incremental_trav_computed"}};
+
+  for (const auto &cell : hole_cells)
+  {
+    grid_map::Position position;
+    if (!map.getPosition(grid_map::Index(cell.first, cell.second), position))
+    {
+      continue;
+    }
+
+    for (grid_map::CircleIterator it(map, position, recompute_radius);
+         !it.isPastEnd(); ++it)
+    {
+      for (const char *layer : computed_layers)
+      {
+        if (map.exists(layer))
+        {
+          map.at(layer, *it) = 0.0f;
+        }
+      }
+    }
+  }
+
+  return StartupHoleFillResult::kFilled;
+}
+} // namespace
 
 #ifndef MULTI_ROBOT_MAPPING_NO_MAIN
 /**
@@ -819,6 +1042,97 @@ void Mapping::processPointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud
   bgk_mapping();
   time2 = ros::Time::now().toSec();
   ROS_INFO("BGK mapping: %.4f seconds", time2 - time1);
+
+  // -----------------------
+  // Step 2.5: Conditional startup blind-spot completion
+  // -----------------------
+  // A sparse lidar can leave a closed unknown component around the initial
+  // pose.  Detect and fill only that component.  If the initial cell is
+  // already valid, or the unknown region is open/too large, no value is added.
+  static bool startup_fill_configured = false;
+  static bool startup_fill_enabled = true;
+  static bool startup_position_recorded = false;
+  static bool startup_fill_finished = false;
+  static grid_map::Position startup_position;
+  static double startup_hole_radius = 3.0;
+  static int startup_hole_max_cells = 200;
+  static int startup_hole_min_boundary_cells = 12;
+  static int startup_hole_max_attempts = 30;
+  static int startup_hole_attempts = 0;
+
+  if (!startup_fill_configured)
+  {
+    pnh_.param<bool>("enable_startup_hole_fill",
+                     startup_fill_enabled, true);
+    pnh_.param<double>("startup_hole_radius",
+                       startup_hole_radius, 3.0);
+    pnh_.param<int>("startup_hole_max_cells",
+                    startup_hole_max_cells, 200);
+    pnh_.param<int>("startup_hole_min_boundary_cells",
+                    startup_hole_min_boundary_cells, 12);
+    pnh_.param<int>("startup_hole_max_attempts",
+                    startup_hole_max_attempts, 30);
+
+    startup_hole_radius = std::max(map_resolution_ * 2.0,
+                                   startup_hole_radius);
+    startup_hole_max_cells = std::max(1, startup_hole_max_cells);
+    startup_hole_min_boundary_cells =
+        std::max(3, startup_hole_min_boundary_cells);
+    startup_hole_max_attempts = std::max(1, startup_hole_max_attempts);
+    startup_fill_configured = true;
+
+    ROS_INFO("Startup hole filling: %s, radius=%.2f m, max_cells=%d, min_boundary=%d, max_attempts=%d",
+             startup_fill_enabled ? "enabled" : "disabled",
+             startup_hole_radius,
+             startup_hole_max_cells,
+             startup_hole_min_boundary_cells,
+             startup_hole_max_attempts);
+  }
+
+  if (startup_fill_enabled && !startup_fill_finished)
+  {
+    if (!startup_position_recorded)
+    {
+      startup_position = grid_map::Position(current_pos.x(), current_pos.y());
+      startup_position_recorded = true;
+    }
+
+    std::size_t filled_cells = 0;
+    StartupHoleFillResult fill_result;
+    {
+      std::lock_guard<std::mutex> lock(gridmap_publish_mutex_);
+      fill_result = fillClosedStartupHole(
+          height_map_,
+          startup_position,
+          startup_hole_radius,
+          static_cast<std::size_t>(startup_hole_max_cells),
+          static_cast<std::size_t>(startup_hole_min_boundary_cells),
+          std::max(normal_estimation_radius_, step_radius_) + map_resolution_,
+          filled_cells);
+    }
+
+    if (fill_result == StartupHoleFillResult::kFilled)
+    {
+      startup_fill_finished = true;
+      ROS_INFO("Filled closed startup lidar blind spot: %zu cells", filled_cells);
+    }
+    else if (fill_result == StartupHoleFillResult::kNoHole)
+    {
+      // No startup hole exists, so leave the map unchanged and stop checking.
+      startup_fill_finished = true;
+      ROS_INFO("No startup lidar blind spot detected; no completion applied");
+    }
+    else
+    {
+      ++startup_hole_attempts;
+      if (startup_hole_attempts >= startup_hole_max_attempts)
+      {
+        startup_fill_finished = true;
+        ROS_WARN("Startup hole was not a safe closed component after %d attempts; leaving it unknown",
+                 startup_hole_attempts);
+      }
+    }
+  }
 
   // -----------------------
   // Step 3: Geometric mapping

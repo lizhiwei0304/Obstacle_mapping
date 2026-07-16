@@ -14,6 +14,14 @@
     <arg name="local_map_size_x" default="20.0" />
     <arg name="local_map_size_y" default="20.0" />
     <arg name="bgk_kernel_size" default="0.6" />
+
+    <!-- Fill only a small closed unknown component at the initial pose. -->
+    <arg name="enable_startup_hole_fill" default="true" />
+    <arg name="startup_hole_radius" default="3.0" />
+    <arg name="startup_hole_max_cells" default="200" />
+    <arg name="startup_hole_min_boundary_cells" default="12" />
+    <arg name="startup_hole_max_attempts" default="30" />
+
     <arg name="slope_threshold" default="0.3" />
     <arg name="roughness_threshold" default="0.04" />
     <arg name="step_threshold" default="0.4" />
@@ -84,6 +92,15 @@
 
         <!-- BGK inference kernel size -->
         <param name="bgk_kernel_size" value="$(arg bgk_kernel_size)" />
+
+        <!-- Conditional initial-position blind-spot completion -->
+        <param name="enable_startup_hole_fill" value="$(arg enable_startup_hole_fill)" />
+        <param name="startup_hole_radius" value="$(arg startup_hole_radius)" />
+        <param name="startup_hole_max_cells" value="$(arg startup_hole_max_cells)" />
+        <param name="startup_hole_min_boundary_cells"
+            value="$(arg startup_hole_min_boundary_cells)" />
+        <param name="startup_hole_max_attempts" value="$(arg startup_hole_max_attempts)" />
+
 
         <!-- Traversability thresholds -->
         <param name="slope_threshold" value="$(arg slope_threshold)" />
