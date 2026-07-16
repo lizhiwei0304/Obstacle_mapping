@@ -95,19 +95,20 @@
     <arg name="enable_incremental_step" default="true" />
     <arg name="enable_incremental_trav" default="true" />
 
-    <arg name="fine_trav_min" default="0.4" />
+    <!-- Only medium/high-risk uncertain cells enter expensive pose/collision checking. -->
+    <arg name="fine_trav_min" default="0.55" />
     <arg name="fine_trav_max" default="0.9" />
-    <arg name="fine_slope_min" default="0.3" />
+    <arg name="fine_slope_min" default="0.50" />
     <arg name="fine_slope_max" default="0.95" />
-    <arg name="fine_roughness_min" default="0.2" />
+    <arg name="fine_roughness_min" default="0.40" />
     <arg name="fine_roughness_max" default="1.0" />
-    <arg name="fine_step_min" default="0.2" />
+    <arg name="fine_step_min" default="0.40" />
     <arg name="fine_step_max" default="1.0" />
     <arg name="fine_roll_threshold_deg" default="30.0" />
     <arg name="fine_pitch_threshold_deg" default="30.0" />
 
     <!-- Fine traversability diagnosis. The CSV is truncated at each launch. -->
-    <arg name="enable_fine_debug_csv" default="true" />
+    <arg name="enable_fine_debug_csv" default="false" />
     <arg name="fine_debug_csv_path"
         default="$(find obstacle_mapping)/$(arg ns)_fine_traversability_debug.csv" />
     <arg name="fine_debug_csv_append" default="false" />
@@ -115,16 +116,22 @@
 
     <arg name="skip_old_messages" default="true" />
 
+    <!-- Incremental fine-map invalidation. A cell and its vehicle-footprint
+         neighborhood are recomputed only after a meaningful height change. -->
+    <arg name="fine_height_change_threshold" default="0.02" />
+    <!-- Negative lets the node derive a safe radius from the vehicle footprint. -->
+    <arg name="fine_recompute_radius" default="-1.0" />
+
     <!-- Global explored grid map publication. The underlying 1000 m x 1000 m
          map is always retained; this controls the low-rate global ROS topic. -->
     <arg name="global_gridmap_topic" default="global_trav_map" />
-    <arg name="global_publish_every_n" default="10" />
+    <arg name="global_publish_every_n" default="50" />
 
 
     <node name="multi_robot_mapping_node" pkg="obstacle_mapping" type="multi_robot_mapping_node"
         output="screen">
         <!-- Topic and frame settings -->
-        <param name="scan_topic" value="registered_scan_accum_10" />
+        <param name="scan_topic" value="registered_scan_accum_5" />
         <param name="frame_id" value="$(arg frame_id)" />
         <param name="queue_size" value="$(arg queue_size)" />
 
@@ -234,6 +241,9 @@
         <param name="enable_incremental_geom" value="$(arg enable_incremental_geom)" />
         <param name="enable_incremental_step" value="$(arg enable_incremental_step)" />
         <param name="enable_incremental_trav" value="$(arg enable_incremental_trav)" />
+        <param name="fine_height_change_threshold"
+            value="$(arg fine_height_change_threshold)" />
+        <param name="fine_recompute_radius" value="$(arg fine_recompute_radius)" />
 
         <!-- Fine-grained traversability range parameters -->
         <param name="fine_trav_min" value="$(arg fine_trav_min)" />

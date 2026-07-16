@@ -8,7 +8,6 @@
     <arg name="namespace_2" default="vehicle$(arg id1)" />
     <arg name="namespace_3" default="vehicle$(arg id2)" />
 
-    <!-- Default: start immediately without /start_exploration. -->
     <arg name="wait_for_start" default="false" />
     <arg name="start_topic" default="/start_exploration" />
 
@@ -19,15 +18,21 @@
               output="screen">
             <param name="wait_for_start" value="$(arg wait_for_start)" />
             <param name="start_topic" value="$(arg start_topic)" />
-            <param name="window_size" value="10" />
-            <param name="publish_every_n" value="5" />
-            <param name="voxel_leaf" value="0.1" />
+
+            <!-- Smaller rolling window reduces stale points and merge cost. -->
+            <param name="window_size" value="5" />
+            <!-- Publish every second synchronized input instead of every fifth. -->
+            <param name="publish_every_n" value="1" />
+            <!-- A 0.2 m voxel is sufficient for the downstream 0.5 m grid. -->
+            <param name="voxel_leaf" value="0.2" />
+
             <param name="prefer_intensity" value="true" />
             <param name="terrain_map" value="terrain_map" />
             <param name="terrain_map_ext" value="terrain_map_ext" />
             <param name="registered_scan" value="registered_scan_filted" />
             <param name="terrain_merged_out" value="terrain_map_merged" />
-            <param name="registered_scan_accum_out" value="registered_scan_accum_10" />
+            <param name="registered_scan_accum_out"
+                   value="registered_scan_accum_5" />
             <param name="sync_slop" value="0.10" />
             <param name="sync_queue" value="10" />
         </node>
@@ -36,6 +41,4 @@
             <arg name="ns" value="$(arg namespace_1)" />
         </include>
     </group>
-
-
 </launch>

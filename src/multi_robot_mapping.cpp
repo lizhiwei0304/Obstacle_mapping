@@ -38,6 +38,11 @@ namespace
     kInvalidMap
   };
 
+  // predictRobotPose() 会对同一格子按“车型 x 航向”连续调用。
+  // 以精细化周期编号作为缓存世代，保证同一周期内复用地形
+  // 子图，下一周期地图更新后不会沿用过期缓存。
+  thread_local std::size_t fine_cycle_generation = 0;
+
   /**
    * @brief Fill only a small, closed unknown component containing the initial
    *        vehicle position.
@@ -216,9 +221,10 @@ namespace
     // A repair can change the neighborhood used by slope/step computation.  If
     // an earlier frame already evaluated nearby cells in incremental mode, mark
     // them for recomputation in the current pipeline.
-    const std::array<const char *, 3> computed_layers = {{"incremental_geom_computed",
+    const std::array<const char *, 4> computed_layers = {{"incremental_geom_computed",
                                                           "incremental_step_computed",
-                                                          "incremental_trav_computed"}};
+                                                          "incremental_trav_computed",
+                                                          "incremental_fine_computed"}};
 
     for (const auto &cell : hole_cells)
     {
@@ -306,11 +312,11 @@ Mapping::Mapping(ros::NodeHandle &nh, ros::NodeHandle &pnh)
       enable_incremental_geom_(true),
       enable_incremental_step_(true),
       enable_incremental_trav_(true),
-      fine_trav_min_(0.4),
+      fine_trav_min_(0.55),
       fine_trav_max_(0.9),
-      fine_slope_min_(0.2),
+      fine_slope_min_(0.50),
       fine_slope_max_(0.8),
-      fine_roughness_min_(0.5),
+      fine_roughness_min_(0.40),
       fine_roughness_max_(1.0),
       fine_roll_threshold_deg_(30.0),
       fine_pitch_threshold_deg_(30.0),
@@ -451,11 +457,13 @@ void Mapping::loadParameters()
   pnh_.param<bool>("enable_fine_traversability", enable_fine_traversability_, false);
 
   // Load fine-grained traversability range parameters
-  pnh_.param<double>("fine_trav_min", fine_trav_min_, 0.4);
+  // 精细化校核只用于中高风险不确定区。提高下限可避免
+  // 在明显平坦区域反复执行昂贵的整车碰撞/支撑姿态求解。
+  pnh_.param<double>("fine_trav_min", fine_trav_min_, 0.55);
   pnh_.param<double>("fine_trav_max", fine_trav_max_, 0.9);
-  pnh_.param<double>("fine_slope_min", fine_slope_min_, 0.2);
+  pnh_.param<double>("fine_slope_min", fine_slope_min_, 0.50);
   pnh_.param<double>("fine_slope_max", fine_slope_max_, 0.8);
-  pnh_.param<double>("fine_roughness_min", fine_roughness_min_, 0.5);
+  pnh_.param<double>("fine_roughness_min", fine_roughness_min_, 0.40);
   pnh_.param<double>("fine_roughness_max", fine_roughness_max_, 1.0);
   pnh_.param<double>("fine_roll_threshold_deg", fine_roll_threshold_deg_, 30.0);
   pnh_.param<double>("fine_pitch_threshold_deg", fine_pitch_threshold_deg_, 30.0);
@@ -720,11 +728,9 @@ void Mapping::processSynchronizedMessages(const sensor_msgs::PointCloud2ConstPtr
     orientation.y() = odom_msg->pose.pose.orientation.y;
     orientation.z() = odom_msg->pose.pose.orientation.z;
 
-    // 将本次回调的位姿写入成员变量（供其它模块读取）
-    vehicle_position_ = position;
-    vehicle_orientation_ = orientation;
-
-    // 标记位姿已经初始化（通常其它模块会用这个 flag 判断能否开始建图/融合）
+    // 回调只记录位姿已可用。真正用于建图的 vehicle_position_
+    // 由处理线程在取出 ProcessingTask 后更新。这样新里程计回调
+    // 不会在旧点云处理到一半时覆盖其位姿。
     vehicle_pose_initialized_ = true;
   }
 
@@ -761,27 +767,21 @@ void Mapping::processSynchronizedMessages(const sensor_msgs::PointCloud2ConstPtr
     // processing_queue_mutex_：保护任务队列（生产者=ROS回调线程，消费者=处理线程）
     std::lock_guard<std::mutex> lock(processing_queue_mutex_);
 
-    // 可选策略：skip_old_messages_ 为 true 时，若处理线程跟不上，就丢掉旧任务
-    // 目的：保证系统“实时性”，不让延迟无限增大
+    // Latest-wins：处理端跟不上时，未开始的旧点云已经
+    // 失去实时价值。每次都清空等待队列，仅保留最新任务，
+    // 防止 trav_map 的延迟随运行时间持续增长。
     if (skip_old_messages_ && !processing_queue_.empty())
     {
-      size_t queue_size = processing_queue_.size();
-
-      // 队列积压超过 2，认为处理端跟不上，清空旧任务
-      // 注意：你这里是“全清空”，相当于只保留最新到来的这一帧
-      if (queue_size > 2)
-      {
-        ROS_WARN("Processing queue has %zu tasks backed up. Clearing old tasks (skip_old_messages=true)",
-                 queue_size);
-
-        // 用空队列交换，达到快速清空队列的效果（O(1) swap）
-        std::queue<ProcessingTask> empty_queue;
-        processing_queue_.swap(empty_queue);
-      }
+      const size_t dropped = processing_queue_.size();
+      std::queue<ProcessingTask> empty_queue;
+      processing_queue_.swap(empty_queue);
+      ROS_WARN_THROTTLE(2.0,
+                        "Dropped %zu stale mapping task(s); keeping the newest scan",
+                        dropped);
     }
 
     // 把本次任务压入队尾
-    processing_queue_.push(task);
+    processing_queue_.push(std::move(task));
   }
 
   // ==========================================
@@ -882,6 +882,13 @@ void Mapping::processingThreadFunc()
         vehicle_orientation_ = task.orientation;
         vehicle_position = task.position;
         vehicle_orientation = task.orientation;
+      }
+
+      // 使局部子图继承与当前点云一致的时间戳，而不是 0
+      // 或发布时刻。这对下游的时序同步和延迟监测很重要。
+      {
+        std::lock_guard<std::mutex> map_lock(gridmap_publish_mutex_);
+        height_map_.setTimestamp(task.timestamp.toNSec());
       }
 
       // ------------------------------------------
@@ -1240,6 +1247,7 @@ void Mapping::initGridMap()
   height_map_.add("incremental_geom_computed");   // Flag: whether geometric mapping has been computed incrementally
   height_map_.add("incremental_step_computed");   // Flag: whether step mapping has been computed incrementally
   height_map_.add("incremental_trav_computed");   // Flag: whether traversability mapping has been computed incrementally
+  height_map_.add("incremental_fine_computed");   // Flag: whether fine traversability is up to date
 
   // Initialize n_points layer to 0
   height_map_["n_points"].setConstant(0);
@@ -1249,6 +1257,7 @@ void Mapping::initGridMap()
   height_map_["incremental_geom_computed"].setConstant(0);
   height_map_["incremental_step_computed"].setConstant(0);
   height_map_["incremental_trav_computed"].setConstant(0);
+  height_map_["incremental_fine_computed"].setConstant(0);
   height_map_["critical"].setConstant(0);
 
   ROS_INFO("Global grid map initialized:");
@@ -1274,6 +1283,43 @@ void Mapping::height_mapping(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud)
   auto &min_elevation = height_map_["min_elevation"]; // cell 内最小高度
   auto &max_elevation = height_map_["max_elevation"]; // cell 内最大高度
   auto &n_points = height_map_["n_points"];           // cell 内累计观测点数（用于统计更新）
+  auto &incremental_geom = height_map_["incremental_geom_computed"];
+  auto &incremental_step = height_map_["incremental_step_computed"];
+  auto &incremental_trav = height_map_["incremental_trav_computed"];
+  auto &incremental_fine = height_map_["incremental_fine_computed"];
+
+  // 只有高程均值发生足够大的变化才重算周边特征和精细化姿态。
+  // 这个阈值可通过 ~fine_height_change_threshold 调整。
+  static bool dirty_configured = false;
+  static double fine_height_change_threshold = 0.02;
+  static double fine_recompute_radius = -1.0;
+  if (!dirty_configured)
+  {
+    pnh_.param<double>("fine_height_change_threshold",
+                       fine_height_change_threshold, 0.02);
+    pnh_.param<double>("fine_recompute_radius",
+                       fine_recompute_radius, -1.0);
+    fine_height_change_threshold =
+        std::max(0.0, fine_height_change_threshold);
+
+    if (fine_recompute_radius <= 0.0)
+    {
+      const double vehicle_width =
+          static_cast<double>(robot_rows_) * robot_model_resolution_;
+      const double vehicle_length =
+          static_cast<double>(robot_cols_) * robot_model_resolution_;
+      fine_recompute_radius =
+          0.5 * std::hypot(vehicle_width, vehicle_length) +
+          std::max(normal_estimation_radius_, step_radius_) +
+          map_resolution_;
+    }
+    fine_recompute_radius =
+        std::max(map_resolution_, fine_recompute_radius);
+    dirty_configured = true;
+
+    ROS_INFO("Incremental fine recomputation: height_delta=%.3f m, radius=%.2f m",
+             fine_height_change_threshold, fine_recompute_radius);
+  }
 
   int cell_count = 0;    // 统计：成功落在地图范围内并更新过的点数（这里命名是 cell_count，但实际上是“点更新次数”）
   int out_of_bounds = 0; // 统计：落在地图外的点数
@@ -1285,6 +1331,7 @@ void Mapping::height_mapping(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud)
   // newly_observed_cells：记录本帧中“从未观测（npts==0）变为有观测（npts>0）”的格子索引
   // 用 set 去重，确保每个格子只记录一次
   std::set<std::pair<int, int>> newly_observed_cells;
+  std::set<std::pair<int, int>> changed_height_cells;
 
   // ==========================
   // [A] 遍历点云：逐点更新对应栅格的统计量
@@ -1316,6 +1363,7 @@ void Mapping::height_mapping(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud)
     // 判断这个 cell 在本次更新之前是否未被观测过
     // npts==0 => 未观测（高度可能来自 BGK 或默认值）
     bool was_unobserved = (npts == 0);
+    const float old_height = height;
 
     if (npts == 0)
     {
@@ -1361,6 +1409,13 @@ void Mapping::height_mapping(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud)
     if (was_unobserved)
     {
       newly_observed_cells.insert(std::make_pair(index(0), index(1)));
+      changed_height_cells.insert(std::make_pair(index(0), index(1)));
+    }
+    else if (std::isfinite(old_height) &&
+             std::fabs(height - old_height) >=
+                 fine_height_change_threshold)
+    {
+      changed_height_cells.insert(std::make_pair(index(0), index(1)));
     }
   }
 
@@ -1373,19 +1428,46 @@ void Mapping::height_mapping(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud)
   // 对于本帧第一次被真实观测到的格子，用真实观测均值覆盖 BGK 值
   int bgk_updated_cells = 0;
 
-  for (const auto &cell_idx : newly_observed_cells)
+  for (const auto &cell_idx : changed_height_cells)
   {
-    // cell_idx 是 pair<int,int> 对应 (i,j)
+    // 真实观测发生明显变化时，同步更新 BGK 高程。
     elevation_bgk(cell_idx.first, cell_idx.second) =
         elevation(cell_idx.first, cell_idx.second);
-
     bgk_updated_cells++;
+  }
+
+  // 一个高程变化会影响周边的法向、台阶以及整车支撑姿态。
+  // 仅把这些依赖区域标记为 dirty，其他格子沿用已有结果。
+  std::size_t invalidated_cells = 0;
+  for (const auto &cell_idx : changed_height_cells)
+  {
+    grid_map::Position changed_position;
+    if (!height_map_.getPosition(
+            grid_map::Index(cell_idx.first, cell_idx.second),
+            changed_position))
+    {
+      continue;
+    }
+
+    for (grid_map::CircleIterator it(height_map_, changed_position,
+                                     fine_recompute_radius);
+         !it.isPastEnd(); ++it)
+    {
+      incremental_geom((*it)(0), (*it)(1)) = 0.0f;
+      incremental_step((*it)(0), (*it)(1)) = 0.0f;
+      incremental_trav((*it)(0), (*it)(1)) = 0.0f;
+      incremental_fine((*it)(0), (*it)(1)) = 0.0f;
+      ++invalidated_cells;
+    }
   }
 
   // 输出统计信息：映射到地图内的点更新次数、以及 BGK 被覆盖的格子数
   // 注意：cell_count 实际上是“点数”，不是 unique cell 数
-  ROS_INFO("Height mapping: processed %d cells, updated %d BGK cells",
-           cell_count, bgk_updated_cells);
+  ROS_INFO("Height mapping: processed %d points, new=%zu, changed=%zu, "
+           "updated_BGK=%d, invalidated=%zu",
+           cell_count, newly_observed_cells.size(),
+           changed_height_cells.size(), bgk_updated_cells,
+           invalidated_cells);
 }
 
 void Mapping::updateHeightStats(float &height, float &variance, float n, float new_height)
@@ -1516,7 +1598,7 @@ void Mapping::bgk_mapping()
     //   (x_train_vec.size() / 2) < 3
     // 目前写成 <3 意味着只有当 x_train_vec.size() 是 0,1,2 才跳过，可能会误放行非常少的样本。
     // （不过后面矩阵构造用 x_train_vec.size()/2，所以极端情况下仍可能不稳）
-    if (x_train_vec.size() < 3)
+    if ((x_train_vec.size() / 2) < 3)
     {
       continue;
     }
@@ -2115,6 +2197,7 @@ void Mapping::traversability_mapping()
 void Mapping::finegrained_traversability_mapping()
 {
   std::lock_guard<std::mutex> lock(gridmap_publish_mutex_);
+  ++fine_cycle_generation;
 
   auto &traversability = height_map_["traversability"];
   auto &slope_layer = height_map_["slope"];
@@ -2126,6 +2209,8 @@ void Mapping::finegrained_traversability_mapping()
   auto &n_points_layer = height_map_["n_points"];
   auto &interpolated_layer = height_map_["interpolated"];
   auto &critical_layer = height_map_["critical"];
+  auto &incremental_fine_computed =
+      height_map_["incremental_fine_computed"];
 
   struct VehicleCapability
   {
@@ -2173,7 +2258,7 @@ void Mapping::finegrained_traversability_mapping()
   static double severity_step_weight = 0.40;
 
   // 这些范围作用于“按车型能力阈值归一化后的特征”。
-  static double fine_step_min = 0.20;
+  static double fine_step_min = 0.40;
   static double fine_step_max = 1.00;
 
   auto clamp01 = [](double value)
@@ -2312,7 +2397,7 @@ void Mapping::finegrained_traversability_mapping()
                        severity_roughness_weight, 0.25);
     pnh_.param<double>("severity_step_weight",
                        severity_step_weight, 0.40);
-    pnh_.param<double>("fine_step_min", fine_step_min, 0.20);
+    pnh_.param<double>("fine_step_min", fine_step_min, 0.40);
     pnh_.param<double>("fine_step_max", fine_step_max, 1.00);
 
     normalizeThreeWeights(pose_angle_weight,
@@ -2449,7 +2534,7 @@ void Mapping::finegrained_traversability_mapping()
   }
 
   static bool csv_configured = false;
-  static bool csv_enabled = true;
+  static bool csv_enabled = false;
   static bool csv_append = false;
   static int csv_max_cycles = 50;
   static std::string csv_path;
@@ -2458,7 +2543,7 @@ void Mapping::finegrained_traversability_mapping()
 
   if (!csv_configured)
   {
-    pnh_.param<bool>("enable_fine_debug_csv", csv_enabled, true);
+    pnh_.param<bool>("enable_fine_debug_csv", csv_enabled, false);
     pnh_.param<bool>("fine_debug_csv_append", csv_append, false);
     pnh_.param<int>("fine_debug_csv_max_cycles", csv_max_cycles, 50);
 
@@ -2597,7 +2682,25 @@ void Mapping::finegrained_traversability_mapping()
   }
 
   const Eigen::Vector3d z_axis(0.0, 0.0, 1.0);
+  std::vector<double> fine_headings(
+      static_cast<std::size_t>(fine_heading_samples));
+  std::vector<Eigen::Matrix3d> fine_heading_rotations(
+      static_cast<std::size_t>(fine_heading_samples));
+  for (int heading_index = 0;
+       heading_index < fine_heading_samples; ++heading_index)
+  {
+    const double heading =
+        fine_heading_samples == 1
+            ? yaw_angle
+            : M_PI * static_cast<double>(heading_index) /
+                  static_cast<double>(fine_heading_samples);
+    fine_headings[static_cast<std::size_t>(heading_index)] = heading;
+    fine_heading_rotations[static_cast<std::size_t>(heading_index)] =
+        Eigen::AngleAxisd(heading, z_axis).toRotationMatrix();
+  }
+
   int count_skipped = 0;
+  int count_cached = 0;
 
   struct PlatformCellMetrics
   {
@@ -2622,6 +2725,16 @@ void Mapping::finegrained_traversability_mapping()
        !it.isPastEnd(); ++it)
   {
     const grid_map::Index idx = *it;
+
+    // 高程及其车辆覆盖邻域没有变化时，直接沿用上一次
+    // 精细化校核结果。这是保持结果一致的增量优化，
+    // 不是简单的降频或丢弃关键区。
+    if (incremental_fine_computed(idx(0), idx(1)) > 0.5f)
+    {
+      ++count_cached;
+      continue;
+    }
+
     critical_layer(idx(0), idx(1)) = 0.0f;
 
     const float coarse_value = traversability(idx(0), idx(1));
@@ -2657,7 +2770,9 @@ void Mapping::finegrained_traversability_mapping()
         severity_roughness_weight * roughness_severity +
         severity_step_weight * step_severity);
 
-    std::vector<PlatformCellMetrics> metrics(vehicles.size());
+    // 最多只有轮式和履带式两种平台，用栈上定长数组
+    // 避免对每个格子进行一次 vector 堆分配。
+    std::array<PlatformCellMetrics, 2> metrics;
     bool any_platform_critical = false;
 
     for (std::size_t vehicle_index = 0;
@@ -2697,11 +2812,10 @@ void Mapping::finegrained_traversability_mapping()
       // d=0 表示平坦地形，d=1 表示达到效率参考上限的复杂地形。
       // 修正量允许为负：轮式在复杂地形加罚，履带在复杂地形获益。
       // 但最终结果始终不低于平台几何代价，因此不会降低硬障碍。
-      cell_metrics.efficiency_adjustment = efficiency_weight * (
-          capability.efficiency_flat_penalty *
-              (1.0 - terrain_severity) +
-          capability.efficiency_rough_penalty * terrain_severity -
-          capability.efficiency_rough_bonus * terrain_severity);
+      cell_metrics.efficiency_adjustment = efficiency_weight * (capability.efficiency_flat_penalty *
+                                                                    (1.0 - terrain_severity) +
+                                                                capability.efficiency_rough_penalty * terrain_severity -
+                                                                capability.efficiency_rough_bonus * terrain_severity);
 
       const double adjusted_geometry_cost = clamp01(
           cell_metrics.geo_cost +
@@ -2731,6 +2845,7 @@ void Mapping::finegrained_traversability_mapping()
     if (!any_platform_critical)
     {
       ++count_skipped;
+      incremental_fine_computed(idx(0), idx(1)) = 1.0f;
       continue;
     }
 
@@ -2742,14 +2857,21 @@ void Mapping::finegrained_traversability_mapping()
     }
     critical_layer(idx(0), idx(1)) = 1.0f;
 
-    // 使用两种平台关键集合的并集；一旦任一平台处于关键区，
-    // 两种车型都执行姿态校核，保证输出与CSV始终可成对比较。
+    // 关键集的并集只用于标记 critical 层。对于某一具体
+    // 平台，只有它自身的几何代价落入精细化区间时才执行
+    // 昂贵的整车碰撞/支撑校核。非关键平台保留上面已写入的
+    // base_cost，不再因另一种平台为 critical 而被连带重算。
     for (std::size_t vehicle_index = 0;
          vehicle_index < vehicles.size(); ++vehicle_index)
     {
       VehicleEvalContext &vehicle = vehicles[vehicle_index];
       const VehicleCapability &capability = *vehicle.capability;
       const PlatformCellMetrics &cell_metrics = metrics[vehicle_index];
+
+      if (!cell_metrics.critical)
+      {
+        continue;
+      }
 
       bool has_success = false;
       bool has_unstable = false;
@@ -2776,13 +2898,10 @@ void Mapping::finegrained_traversability_mapping()
            heading_index < fine_heading_samples; ++heading_index)
       {
         const double heading =
-            fine_heading_samples == 1
-                ? yaw_angle
-                : M_PI * static_cast<double>(heading_index) /
-                      static_cast<double>(fine_heading_samples);
+            fine_headings[static_cast<std::size_t>(heading_index)];
         const double heading_deg = heading * 180.0 / M_PI;
-        const Eigen::Matrix3d heading_rotation =
-            Eigen::AngleAxisd(heading, z_axis).toRotationMatrix();
+        const Eigen::Matrix3d &heading_rotation =
+            fine_heading_rotations[static_cast<std::size_t>(heading_index)];
 
         double roll = 0.0;
         double pitch = 0.0;
@@ -2874,8 +2993,8 @@ void Mapping::finegrained_traversability_mapping()
       {
         ++vehicle.count_success;
         const double heading_cost = 1.0 - clamp01(
-            static_cast<double>(success_headings) /
-            static_cast<double>(fine_heading_samples));
+                                              static_cast<double>(success_headings) /
+                                              static_cast<double>(fine_heading_samples));
         const double pose_cost = clamp01(
             best_partial_pose_cost +
             pose_heading_weight * heading_cost);
@@ -2968,10 +3087,13 @@ void Mapping::finegrained_traversability_mapping()
             cell_metrics.efficiency_adjustment, cell_metrics.base_cost);
       }
     }
+
+    incremental_fine_computed(idx(0), idx(1)) = 1.0f;
   }
 
   ROS_INFO("Platform traversability statistics:");
   ROS_INFO("  Skipped cells: %d", count_skipped);
+  ROS_INFO("  Reused cached fine cells: %d", count_cached);
   for (const auto &vehicle : vehicles)
   {
     ROS_INFO("  %s => success=%d, collision=%d, failure=%d, nominal_contacts=%d",
@@ -3088,13 +3210,6 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
       vehicle_type == 2 ? tracked_collision_clearance
                         : wheeled_collision_clearance;
 
-  grid_map::Position center_pos;
-
-  if (!height_map_.getPosition(center_idx, center_pos))
-  {
-    return kPoseFailure;
-  }
-
   const double vehicle_width =
       static_cast<double>(robot_rows_) *
       robot_model_resolution_;
@@ -3107,68 +3222,102 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
       std::sqrt(vehicle_width * vehicle_width +
                 vehicle_length * vehicle_length);
 
-  bool submap_ok = false;
-
-  grid_map::GridMap submap =
-      height_map_.getSubmap(
-          center_pos,
-          grid_map::Length(submap_side, submap_side),
-          submap_ok);
-
-  if (!submap_ok)
+  struct TerrainPatchCache
   {
-    return kPoseFailure;
-  }
+    const Mapping *owner = nullptr;
+    std::size_t generation = 0;
+    grid_map::Index center_idx;
+    grid_map::Position center_pos;
+    grid_map::GridMap submap;
+    Eigen::Vector3d terrain_normal = Eigen::Vector3d::UnitZ();
+    bool valid = false;
+  };
 
-  // =====================================================
-  // 1. 收集地形点并拟合初始地形平面
-  // =====================================================
-  std::vector<Eigen::Vector3d> terrain_points;
+  static thread_local TerrainPatchCache terrain_cache;
 
-  for (grid_map::GridMapIterator it(submap);
-       !it.isPastEnd(); ++it)
+  const bool cache_hit =
+      terrain_cache.valid &&
+      terrain_cache.owner == this &&
+      terrain_cache.generation == fine_cycle_generation &&
+      terrain_cache.center_idx(0) == center_idx(0) &&
+      terrain_cache.center_idx(1) == center_idx(1);
+
+  if (!cache_hit)
   {
-    const grid_map::Index idx = *it;
-    const float z =
-        submap.at("elevation_BGK", idx);
+    terrain_cache.valid = false;
+    terrain_cache.owner = this;
+    terrain_cache.generation = fine_cycle_generation;
+    terrain_cache.center_idx = center_idx;
 
-    if (!std::isfinite(z))
+    if (!height_map_.getPosition(center_idx,
+                                 terrain_cache.center_pos))
     {
-      continue;
+      return kPoseFailure;
     }
 
-    grid_map::Position pos;
+    bool submap_ok = false;
+    terrain_cache.submap = height_map_.getSubmap(
+        terrain_cache.center_pos,
+        grid_map::Length(submap_side, submap_side),
+        submap_ok);
 
-    if (submap.getPosition(idx, pos))
+    if (!submap_ok)
     {
-      terrain_points.emplace_back(
-          pos.x(),
-          pos.y(),
-          static_cast<double>(z));
+      return kPoseFailure;
     }
+
+    // 该子图与初始地形平面只与中心格子有关，与车型和
+    // 航向无关，因此在 2 种车型 x 4 个航向之间共享。
+    std::vector<Eigen::Vector3d> terrain_points;
+    terrain_points.reserve(64);
+
+    for (grid_map::GridMapIterator it(terrain_cache.submap);
+         !it.isPastEnd(); ++it)
+    {
+      const grid_map::Index idx = *it;
+      const float z =
+          terrain_cache.submap.at("elevation_BGK", idx);
+
+      if (!std::isfinite(z))
+      {
+        continue;
+      }
+
+      grid_map::Position pos;
+      if (terrain_cache.submap.getPosition(idx, pos))
+      {
+        terrain_points.emplace_back(
+            pos.x(), pos.y(), static_cast<double>(z));
+      }
+    }
+
+    if (terrain_points.size() < 4)
+    {
+      return kPoseFailure;
+    }
+
+    terrain_cache.terrain_normal = fitPlane(terrain_points);
+    if (!terrain_cache.terrain_normal.allFinite() ||
+        terrain_cache.terrain_normal.norm() < 1e-6)
+    {
+      return kPoseFailure;
+    }
+
+    terrain_cache.terrain_normal.normalize();
+    if (terrain_cache.terrain_normal.z() < 0.0)
+    {
+      terrain_cache.terrain_normal =
+          -terrain_cache.terrain_normal;
+    }
+
+    terrain_cache.valid = true;
   }
 
-  if (terrain_points.size() < 4)
-  {
-    return kPoseFailure;
-  }
-
-  Eigen::Vector3d terrain_normal =
-      fitPlane(terrain_points);
-
-  if (!terrain_normal.allFinite() ||
-      terrain_normal.norm() < 1e-6)
-  {
-    return kPoseFailure;
-  }
-
-  terrain_normal.normalize();
-
-  // 保证地形法向朝上，防止车辆初始姿态翻转。
-  if (terrain_normal.z() < 0.0)
-  {
-    terrain_normal = -terrain_normal;
-  }
+  const grid_map::Position &center_pos =
+      terrain_cache.center_pos;
+  const grid_map::GridMap &submap = terrain_cache.submap;
+  const Eigen::Vector3d &terrain_normal =
+      terrain_cache.terrain_normal;
 
   const Eigen::Vector3d z_axis(0.0, 0.0, 1.0);
   const Eigen::Vector3d gravity(0.0, 0.0, -1.0);
@@ -4882,15 +5031,20 @@ void Mapping::publishGridMap()
   // because a global GridMap message can be much larger than the local map.
   static ros::Publisher global_gridmap_pub;
   static bool global_publisher_initialized = false;
-  static int global_publish_every_n = 10;
+  static int global_publish_every_n = 50;
   static int global_publish_counter = 0;
+  static bool global_swept_bounds_initialized = false;
+  static double global_swept_min_x = 0.0;
+  static double global_swept_min_y = 0.0;
+  static double global_swept_max_x = 0.0;
+  static double global_swept_max_y = 0.0;
 
   if (!global_publisher_initialized)
   {
     std::string global_gridmap_topic;
     pnh_.param<std::string>("global_gridmap_topic", global_gridmap_topic, "global_trav_map");
 
-    pnh_.param<int>("global_publish_every_n", global_publish_every_n, 10);
+    pnh_.param<int>("global_publish_every_n", global_publish_every_n, 50);
 
     global_publish_every_n = std::max(1, global_publish_every_n);
 
@@ -4902,6 +5056,36 @@ void Mapping::publishGridMap()
              global_publish_every_n);
   }
 
+  // 每次局部发布时用当前位姿增量扩展“已扫过范围”。
+  // 所有进入地图的点都已经通过 max_range_ 过滤，因此该包围框
+  // 保证覆盖所有真实观测。与每次扫描 400 万个 n_points 格子
+  // 相比，这里每帧只需 O(1) 更新。
+  Eigen::Vector3d global_pose_snapshot;
+  {
+    std::lock_guard<std::mutex> pose_lock(vehicle_pose_mutex_);
+    global_pose_snapshot = vehicle_position_;
+  }
+
+  const double pose_min_x = global_pose_snapshot.x() - max_range_;
+  const double pose_min_y = global_pose_snapshot.y() - max_range_;
+  const double pose_max_x = global_pose_snapshot.x() + max_range_;
+  const double pose_max_y = global_pose_snapshot.y() + max_range_;
+  if (!global_swept_bounds_initialized)
+  {
+    global_swept_min_x = pose_min_x;
+    global_swept_min_y = pose_min_y;
+    global_swept_max_x = pose_max_x;
+    global_swept_max_y = pose_max_y;
+    global_swept_bounds_initialized = true;
+  }
+  else
+  {
+    global_swept_min_x = std::min(global_swept_min_x, pose_min_x);
+    global_swept_min_y = std::min(global_swept_min_y, pose_min_y);
+    global_swept_max_x = std::max(global_swept_max_x, pose_max_x);
+    global_swept_max_y = std::max(global_swept_max_y, pose_max_y);
+  }
+
   ++global_publish_counter;
   if (global_publish_counter < global_publish_every_n)
   {
@@ -4910,54 +5094,13 @@ void Mapping::publishGridMap()
   global_publish_counter = 0;
 
   grid_map::GridMap global_explored_map;
-  std::size_t observed_cell_count = 0;
 
   {
     std::lock_guard<std::mutex> lock(gridmap_publish_mutex_);
 
-    if (!height_map_.exists("n_points"))
+    if (!global_swept_bounds_initialized)
     {
-      ROS_WARN_THROTTLE(2.0, "Cannot build global explored map: n_points layer is missing.");
-      return;
-    }
-
-    const auto &observed = height_map_["n_points"];
-    double min_x = std::numeric_limits<double>::infinity();
-    double min_y = std::numeric_limits<double>::infinity();
-    double max_x = -std::numeric_limits<double>::infinity();
-    double max_y = -std::numeric_limits<double>::infinity();
-
-    // height_map_ has fixed geometry and is never moved, therefore its matrix
-    // indices can be converted directly to map positions.
-    for (Eigen::Index row = 0; row < observed.rows(); ++row)
-    {
-      for (Eigen::Index col = 0; col < observed.cols(); ++col)
-      {
-        const float n = observed(row, col);
-        if (!std::isfinite(n) || n <= 0.0f)
-        {
-          continue;
-        }
-
-        grid_map::Position position;
-        const grid_map::Index index(static_cast<int>(row),
-                                    static_cast<int>(col));
-        if (!height_map_.getPosition(index, position))
-        {
-          continue;
-        }
-
-        min_x = std::min(min_x, position.x());
-        min_y = std::min(min_y, position.y());
-        max_x = std::max(max_x, position.x());
-        max_y = std::max(max_y, position.y());
-        ++observed_cell_count;
-      }
-    }
-
-    if (observed_cell_count == 0)
-    {
-      ROS_WARN_THROTTLE(2.0, "No observed cells yet; skip global grid map publication.");
+      ROS_WARN_THROTTLE(2.0, "No swept map bounds yet; skip global grid map publication.");
       return;
     }
 
@@ -4971,10 +5114,14 @@ void Mapping::publishGridMap()
     const double map_max_x = map_center.x() + 0.5 * map_length.x();
     const double map_max_y = map_center.y() + 0.5 * map_length.y();
 
-    min_x = std::max(map_min_x, min_x - resolution);
-    min_y = std::max(map_min_y, min_y - resolution);
-    max_x = std::min(map_max_x, max_x + resolution);
-    max_y = std::min(map_max_y, max_y + resolution);
+    double min_x = std::max(map_min_x,
+                            global_swept_min_x - resolution);
+    double min_y = std::max(map_min_y,
+                            global_swept_min_y - resolution);
+    double max_x = std::min(map_max_x,
+                            global_swept_max_x + resolution);
+    double max_y = std::min(map_max_y,
+                            global_swept_max_y + resolution);
 
     const double length_x = std::max(resolution, max_x - min_x);
     const double length_y = std::max(resolution, max_y - min_y);
@@ -5027,10 +5174,9 @@ void Mapping::publishGridMap()
   global_gridmap_pub.publish(global_message);
 
   ROS_INFO_THROTTLE(2.0,
-                    "Published global explored grid map: %.1f x %.1f m, %zu observed cells",
+                    "Published global swept grid map: %.1f x %.1f m",
                     global_explored_map.getLength().x(),
-                    global_explored_map.getLength().y(),
-                    observed_cell_count);
+                    global_explored_map.getLength().y());
 }
 
 bool Mapping::buildGridMapMessage(grid_map_msgs::GridMap &message)
