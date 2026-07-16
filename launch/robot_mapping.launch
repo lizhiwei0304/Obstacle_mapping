@@ -38,10 +38,10 @@
     <arg name="robot_rows" default="9" />
     <arg name="robot_cols" default="11" />
     <arg name="robot_model_resolution" default="0.2" />
+
     <arg name="touch_gap_threshold" default="0.05" />
     <arg name="collision_gap_threshold" default="0.1" />
     <arg name="max_iterations" default="50" />
-
     <arg name="fine_min_support_points" default="3" />
     <arg name="fine_max_rotation_step_deg" default="5.0" />
     <arg name="fine_max_pose_tilt_deg" default="60.0" />
@@ -66,7 +66,7 @@
     <arg name="fine_debug_csv_path"
         default="$(find obstacle_mapping)/$(arg ns)_fine_traversability_debug.csv" />
     <arg name="fine_debug_csv_append" default="false" />
-    <arg name="fine_debug_csv_max_cycles" default="50" />
+    <arg name="fine_debug_csv_max_cycles" default="500" />
 
     <arg name="skip_old_messages" default="false" />
 
@@ -132,12 +132,14 @@
         <param name="robot_rows" value="$(arg robot_rows)" />
         <param name="robot_cols" value="$(arg robot_cols)" />
         <param name="robot_model_resolution" value="$(arg robot_model_resolution)" />
+
         <param name="touch_gap_threshold" value="$(arg touch_gap_threshold)" />
         <param name="collision_gap_threshold" value="$(arg collision_gap_threshold)" />
         <param name="max_iterations" value="$(arg max_iterations)" />
         <param name="fine_min_support_points" value="$(arg fine_min_support_points)" />
         <param name="fine_max_rotation_step_deg" value="$(arg fine_max_rotation_step_deg)" />
         <param name="fine_max_pose_tilt_deg" value="$(arg fine_max_pose_tilt_deg)" />
+
         <param name="fine_heading_samples" value="$(arg fine_heading_samples)" />
 
         <!-- Fine-grained traversability computation control -->

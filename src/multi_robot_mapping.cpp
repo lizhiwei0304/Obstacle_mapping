@@ -2589,9 +2589,14 @@ void Mapping::finegrained_traversability_mapping()
 }
 
 // ==================== Robot Pose Prediction ====================
-int Mapping::predictRobotPose(const grid_map::Index &center_idx, double &roll, double &pitch,
-                              int &contact_points, int &stable, const Eigen::Matrix3d &yaw_rotation,
-                              const HeightGrid &vehicle_model, int vehicle_type)
+int Mapping::predictRobotPose(const grid_map::Index &center_idx,
+                              double &roll,
+                              double &pitch,
+                              int &contact_points,
+                              int &stable,
+                              const Eigen::Matrix3d &yaw_rotation,
+                              const HeightGrid &vehicle_model,
+                              int vehicle_type)
 {
   roll = 0.0;
   pitch = 0.0;
@@ -2602,650 +2607,1721 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx, double &roll, d
   static int fine_min_support_points = 3;
   static double fine_max_rotation_step_deg = 5.0;
   static double fine_max_pose_tilt_deg = 60.0;
+
   if (!pose_limits_configured)
   {
-    pnh_.param<int>("fine_min_support_points", fine_min_support_points, 3);
-    pnh_.param<double>("fine_max_rotation_step_deg", fine_max_rotation_step_deg, 5.0);
-    pnh_.param<double>("fine_max_pose_tilt_deg", fine_max_pose_tilt_deg, 60.0);
+    pnh_.param<int>("fine_min_support_points",
+                    fine_min_support_points, 3);
 
-    fine_min_support_points = std::max(3, fine_min_support_points);
-    fine_max_rotation_step_deg = std::max(0.1, std::min(30.0, fine_max_rotation_step_deg));
-    fine_max_pose_tilt_deg = std::max(1.0, std::min(89.0, fine_max_pose_tilt_deg));
+    pnh_.param<double>("fine_max_rotation_step_deg",
+                       fine_max_rotation_step_deg, 5.0);
+
+    pnh_.param<double>("fine_max_pose_tilt_deg",
+                       fine_max_pose_tilt_deg, 60.0);
+
+    fine_min_support_points =
+        std::max(3, fine_min_support_points);
+
+    fine_max_rotation_step_deg =
+        std::max(0.1,
+                 std::min(30.0,
+                          fine_max_rotation_step_deg));
+
+    fine_max_pose_tilt_deg =
+        std::max(1.0,
+                 std::min(89.0,
+                          fine_max_pose_tilt_deg));
+
     pose_limits_configured = true;
   }
 
-  // -----------------------------------------
-  // [A1] 将中心 cell 索引转成连续坐标 (x,y)
-  // -----------------------------------------
-  // center_pos 是地图坐标系中的平面位置，用来获取子地图并作为车辆平移中心
   grid_map::Position center_pos;
+
   if (!height_map_.getPosition(center_idx, center_pos))
   {
     return kPoseFailure;
   }
 
-  // -----------------------------------------
-  // [A2] 计算一个足够覆盖车辆的子地图范围（正方形）
-  // -----------------------------------------
-  // vehicle_model 是 robot_rows_ x robot_cols_ 的离散采样网格（车辆足迹/底盘采样点）
-  // robot_model_resolution_ 是模型网格的分辨率
-  //
-  // 这里把车辆占地宽/长估计出来，然后取对角线长度作为子地图边长（submap_side）
-  double vehicle_width = robot_rows_ * robot_model_resolution_;
-  double vehicle_length = robot_cols_ * robot_model_resolution_;
-  double submap_side = std::sqrt(vehicle_width * vehicle_width + vehicle_length * vehicle_length);
-  grid_map::Length submap_length(submap_side, submap_side);
+  const double vehicle_width =
+      static_cast<double>(robot_rows_) *
+      robot_model_resolution_;
 
-  bool success;
-  grid_map::GridMap submap = height_map_.getSubmap(center_pos, submap_length, success);
+  const double vehicle_length =
+      static_cast<double>(robot_cols_) *
+      robot_model_resolution_;
 
-  if (!success)
+  const double submap_side =
+      std::sqrt(vehicle_width * vehicle_width +
+                vehicle_length * vehicle_length);
+
+  bool submap_ok = false;
+
+  grid_map::GridMap submap =
+      height_map_.getSubmap(
+          center_pos,
+          grid_map::Length(submap_side, submap_side),
+          submap_ok);
+
+  if (!submap_ok)
   {
     return kPoseFailure;
   }
 
-  // -----------------------------------------
-  // [B1] 收集子地图内所有有效地形点，用于拟合一个局部平面
-  // -----------------------------------------
-  // terrain_points 用于 fitPlane()：得到局部地形法向 normal
+  // =====================================================
+  // 1. 收集地形点并拟合初始地形平面
+  // =====================================================
   std::vector<Eigen::Vector3d> terrain_points;
-  for (grid_map::GridMapIterator it(submap); !it.isPastEnd(); ++it)
-  {
-    grid_map::Index idx = *it;
-    float z = submap.at("elevation_BGK", idx);
 
-    // elevation_BGK 有 NaN 的格子跳过
-    if (!std::isnan(z))
+  for (grid_map::GridMapIterator it(submap);
+       !it.isPastEnd(); ++it)
+  {
+    const grid_map::Index idx = *it;
+    const float z =
+        submap.at("elevation_BGK", idx);
+
+    if (!std::isfinite(z))
     {
-      grid_map::Position pos;
-      submap.getPosition(idx, pos);
-      terrain_points.push_back(Eigen::Vector3d(pos.x(), pos.y(), z));
+      continue;
+    }
+
+    grid_map::Position pos;
+
+    if (submap.getPosition(idx, pos))
+    {
+      terrain_points.emplace_back(
+          pos.x(),
+          pos.y(),
+          static_cast<double>(z));
     }
   }
 
-  // 点太少无法拟合平面
   if (terrain_points.size() < 4)
   {
     return kPoseFailure;
   }
 
-  // -----------------------------------------
-  // [B2] 拟合平面得到法向 normal（fitPlane 内部一般就是 PCA/最小二乘）
-  // -----------------------------------------
-  Eigen::Vector3d normal = fitPlane(terrain_points);
+  Eigen::Vector3d terrain_normal =
+      fitPlane(terrain_points);
 
-  // -----------------------------------------
-  // [B3] 用 normal 计算“让车辆 z轴对齐到 normal 的旋转”= 地形坡度姿态（roll/pitch）
-  // -----------------------------------------
-  // z_axis = 世界竖直方向
-  Eigen::Vector3d z_axis(0, 0, 1);
-
-  // rotation_axis = z_axis x normal：把 z 转到 normal 的旋转轴
-  Eigen::Vector3d rotation_axis = z_axis.cross(normal);
-
-  Eigen::Matrix3d terrain_rotation = Eigen::Matrix3d::Identity();
-  if (rotation_axis.norm() > 1e-6)
+  if (!terrain_normal.allFinite() ||
+      terrain_normal.norm() < 1e-6)
   {
-    // angle = arccos(z · normal)：夹角
-    double angle = std::acos(std::min(1.0, std::max(-1.0, z_axis.dot(normal))));
-
-    // terrain_rotation：绕 rotation_axis 旋转 angle
-    Eigen::AngleAxisd aa(angle, rotation_axis.normalized());
-    terrain_rotation = aa.toRotationMatrix();
+    return kPoseFailure;
   }
 
-  // -----------------------------------------
-  // [B4] 合成最终初始姿态：R = yaw * (roll/pitch)
-  // -----------------------------------------
-  // yaw_rotation 是外部传入的“车辆航向角”旋转（绕 Z）
-  // terrain_rotation 是“坡面倾斜”旋转（把 z 对齐到 normal）
-  // 注意：矩阵乘法顺序很重要
-  // R = yaw * terrain ：表示先对齐坡面，再施加车辆航向
-  // Apply heading first, then tilt the vehicle so its local Z axis remains
-  // aligned with the world-frame terrain normal.
-  Eigen::Matrix3d R_matrix = terrain_rotation * yaw_rotation;
+  terrain_normal.normalize();
 
-  // -----------------------------------------
-  // [B5] 构造齐次变换 T：初始把车辆模型放在 (center_x, center_y, z=0) 上
-  // -----------------------------------------
-  Eigen::Matrix4d T_matrix = Eigen::Matrix4d::Identity();
-  T_matrix.block<3, 3>(0, 0) = R_matrix;
-  T_matrix.block<3, 1>(0, 3) = Eigen::Vector3d(center_pos.x(), center_pos.y(), 0.0);
-
-  // ==================== Iterative Pose Refinement ====================
-  // min_gap：车辆模型点到地形的最小“垂直间隙”（global_point.z - terrain_z）
-  double min_gap = 100.0;
-  std::vector<Eigen::Vector3d> touch_points;
-  std::vector<Eigen::Vector3d> touch_poly;
-  bool is_stable = false;
-  contact_points = 0;
-  bool collision = false;
-
-  // --------- helper: 从当前 T_matrix 提取 roll/pitch（单位：deg）---------
-  auto updateRollPitchFromT = [&](const Eigen::Matrix4d &T)
+  // 保证地形法向朝上，防止车辆初始姿态翻转。
+  if (terrain_normal.z() < 0.0)
   {
-    Eigen::Matrix3d R = T.block<3, 3>(0, 0);
+    terrain_normal = -terrain_normal;
+  }
 
-    // roll = atan2(R21, R22)
-    roll = std::atan2(R(2, 1), R(2, 2)) * 180.0 / M_PI;
+  const Eigen::Vector3d z_axis(0.0, 0.0, 1.0);
+  const Eigen::Vector3d gravity(0.0, 0.0, -1.0);
 
-    // pitch = asin(-R20)，做一下数值夹紧避免 asin 输入略超 [-1,1]
-    double s = -R(2, 0);
-    s = std::max(-1.0, std::min(1.0, s));
-    pitch = std::asin(s) * 180.0 / M_PI;
+  Eigen::Matrix3d terrain_rotation =
+      Eigen::Matrix3d::Identity();
+
+  const Eigen::Vector3d terrain_axis =
+      z_axis.cross(terrain_normal);
+
+  if (terrain_axis.norm() > 1e-6)
+  {
+    const double cosine =
+        std::max(
+            -1.0,
+            std::min(
+                1.0,
+                z_axis.dot(terrain_normal)));
+
+    terrain_rotation =
+        Eigen::AngleAxisd(
+            std::acos(cosine),
+            terrain_axis.normalized())
+            .toRotationMatrix();
+  }
+
+  // =====================================================
+  // 2. 初始化车辆齐次变换
+  // =====================================================
+  Eigen::Matrix4d T_matrix =
+      Eigen::Matrix4d::Identity();
+
+  T_matrix.block<3, 3>(0, 0) =
+      terrain_rotation * yaw_rotation;
+
+  T_matrix.block<3, 1>(0, 3) =
+      Eigen::Vector3d(
+          center_pos.x(),
+          center_pos.y(),
+          0.0);
+
+  auto updateRollPitchFromT =
+      [&](const Eigen::Matrix4d &T)
+  {
+    const Eigen::Matrix3d R =
+        T.block<3, 3>(0, 0);
+
+    roll =
+        std::atan2(R(2, 1), R(2, 2)) *
+        180.0 / M_PI;
+
+    const double value =
+        std::max(
+            -1.0,
+            std::min(1.0, -R(2, 0)));
+
+    pitch =
+        std::asin(value) *
+        180.0 / M_PI;
   };
 
-  auto exceedsTiltLimit = [&](const Eigen::Matrix4d &T)
+  auto exceedsTiltLimit =
+      [&](const Eigen::Matrix4d &T)
   {
     if (!T.allFinite())
     {
       return true;
     }
-    const Eigen::Vector3d body_up = T.block<3, 3>(0, 0).col(2);
-    if (!body_up.allFinite() || body_up.norm() < 1e-6)
+
+    const Eigen::Vector3d body_up =
+        T.block<3, 3>(0, 0).col(2);
+
+    if (!body_up.allFinite() ||
+        body_up.norm() < 1e-6)
     {
       return true;
     }
+
     const double max_tilt_rad =
-        fine_max_pose_tilt_deg * M_PI / 180.0;
-    return body_up.normalized().z() < std::cos(max_tilt_rad);
+        fine_max_pose_tilt_deg *
+        M_PI / 180.0;
+
+    return body_up.normalized().z() <
+           std::cos(max_tilt_rad);
   };
 
-  // ==================== Iterative Rotation ====================
-  int iteration = 0;
-  while (iteration < max_iterations_)
+  auto cross2d =
+      [](const Eigen::Vector2d &origin,
+         const Eigen::Vector2d &a,
+         const Eigen::Vector2d &b)
   {
-    // Step 0: Check collision and stability
-    if (collision)
-    {
-      stable = 0;
-      return kPoseCollision;
-    }
+    return (a.x() - origin.x()) *
+               (b.y() - origin.y()) -
+           (a.y() - origin.y()) *
+               (b.x() - origin.x());
+  };
 
-    if (is_stable)
-    {
-      updateRollPitchFromT(T_matrix);
-      if (exceedsTiltLimit(T_matrix))
-      {
-        stable = 0;
-        return kPoseUnstable;
-      }
-      stable = 1;
-      return kPoseSuccess;
-    }
-
-    // -----------------------------------------
-    // [C1] 计算 gap_map，并找最小间隙 min_gap
-    // -----------------------------------------
-    // gap_map(i,j) 表示：车辆模型网格点 (i,j) 变换到世界后，与地形高度的差值
-    // gap = z_vehicle_point - z_terrain
-    // gap>0: 车辆在地形上方（悬空）
-    // gap≈0: 接触
-    // gap<0: 穿透/碰撞（这里用 collision_gap_threshold_ 判定）
-    min_gap = 100.0;
-    Eigen::MatrixXd gap_map(robot_rows_, robot_cols_);
-    gap_map.setConstant(std::numeric_limits<double>::quiet_NaN());
-
-    for (int i = 0; i < robot_rows_; ++i)
-    {
-      for (int j = 0; j < robot_cols_; ++j)
-      {
-        Eigen::Vector4d robot_point(vehicle_model.X_(i, j), vehicle_model.Y_(i, j), vehicle_model.Z_(i, j), 1.0);
-        Eigen::Vector4d global_point = T_matrix * robot_point;
-
-        grid_map::Index terrain_idx;
-        if (submap.getIndex(grid_map::Position(global_point.x(), global_point.y()), terrain_idx))
+  auto computeHull =
+      [&](std::vector<Eigen::Vector2d> points)
+  {
+    std::sort(
+        points.begin(),
+        points.end(),
+        [](const Eigen::Vector2d &a,
+           const Eigen::Vector2d &b)
         {
-          float terrain_z = submap.at("elevation_BGK", terrain_idx);
-          if (!std::isnan(terrain_z))
+          if (std::fabs(a.x() - b.x()) < 1e-12)
           {
-            double gap = global_point.z() - terrain_z;
-            gap_map(i, j) = gap;
-            min_gap = std::min(min_gap, gap);
+            return a.y() < b.y();
           }
-        }
-      }
-    }
 
-    // -----------------------------------------
-    // [C2] “落地”：整体向下平移 min_gap，让最接近地面的点恰好接触地面
-    // -----------------------------------------
-    // 如果 min_gap 是正数，说明所有点都在地面之上，向下移 min_gap 就会有最小点接触地面
-    // 如果 min_gap 是负数，说明已经有点低于地面，T_matrix(2,3)-=min_gap 会把车往上抬
-    if (min_gap < 100.0)
-    {
-      T_matrix(2, 3) -= min_gap;
-    }
+          return a.x() < b.x();
+        });
 
-    // -----------------------------------------
-    // [D1] 找接触点：gap < touch_gap_threshold_ 的点当作“支撑接触”
-    // -----------------------------------------
-    touch_points.clear();
-    std::vector<Eigen::Vector2d> touch_points_2d;
-    contact_points = 0;
-    collision = false;
-
-    for (int i = 0; i < robot_rows_; ++i)
-    {
-      for (int j = 0; j < robot_cols_; ++j)
-      {
-        Eigen::Vector4d robot_point(vehicle_model.X_(i, j), vehicle_model.Y_(i, j), vehicle_model.Z_(i, j), 1.0);
-        Eigen::Vector4d global_point = T_matrix * robot_point;
-
-        grid_map::Index terrain_idx;
-        if (submap.getIndex(grid_map::Position(global_point.x(), global_point.y()), terrain_idx))
-        {
-          float terrain_z = submap.at("elevation_BGK", terrain_idx);
-          if (!std::isnan(terrain_z))
-          {
-            double gap = global_point.z() - terrain_z;
-            gap_map(i, j) = gap;
-
-            const bool collision_sensitive =
-                checkWheel(vehicle_type, i, j);
-
-            // Only wheel/track cells are support contacts.  Chassis cells are
-            // evaluated independently against the configured body clearance.
-            if (!collision_sensitive && gap < touch_gap_threshold_)
+    points.erase(
+        std::unique(
+            points.begin(),
+            points.end(),
+            [](const Eigen::Vector2d &a,
+               const Eigen::Vector2d &b)
             {
-              contact_points++;
-              touch_points.push_back(Eigen::Vector3d(global_point.x(), global_point.y(), global_point.z()));
-              touch_points_2d.push_back(Eigen::Vector2d(vehicle_model.X_(i, j), vehicle_model.Y_(i, j)));
-            }
+              return (a - b).squaredNorm() <
+                     1e-12;
+            }),
+        points.end());
 
-            if (collision_sensitive && gap < collision_gap_threshold_)
-            {
-              collision = true;
-            }
-          }
-        }
-      }
+    if (points.size() <= 1)
+    {
+      return points;
     }
 
-    if (collision)
+    std::vector<Eigen::Vector2d> hull;
+
+    for (const auto &point : points)
     {
-      stable = 0;
-      return kPoseCollision;
-    }
-
-    // A valid support polygon requires at least three non-collinear permitted
-    // wheel/track contacts.  One- or two-point support must never be reported
-    // as a stable vehicle pose.
-    if (touch_points.size() <
-        static_cast<std::size_t>(fine_min_support_points))
-    {
-      return kPoseFailure;
-    }
-
-    // Step 4: 支撑多边形 + 重力线投影
-    // cross2d: 计算二维叉积符号，用于凸包判向
-    auto cross2d = [](const Eigen::Vector2d &O, const Eigen::Vector2d &A, const Eigen::Vector2d &B)
-    {
-      return (A.x() - O.x()) * (B.y() - O.y()) - (A.y() - O.y()) * (B.x() - O.x());
-    };
-
-    // computeHull: 输入一堆 2D 点，输出凸包点序列（逆/顺时针）
-    auto computeHull = [&](std::vector<Eigen::Vector2d> pts)
-    {
-      if (pts.size() <= 1)
-      {
-        return pts;
-      }
-      std::sort(pts.begin(), pts.end(), [](const Eigen::Vector2d &a, const Eigen::Vector2d &b)
-                {
-                if (a.x() == b.x())
-                {
-                    return a.y() < b.y();
-                }
-                return a.x() < b.x(); });
-
-      pts.erase(std::unique(pts.begin(), pts.end(),
-                            [](const Eigen::Vector2d &a,
-                               const Eigen::Vector2d &b)
-                            {
-                              return (a - b).squaredNorm() < 1e-12;
-                            }),
-                pts.end());
-
-      if (pts.size() <= 1)
-      {
-        return pts;
-      }
-
-      std::vector<Eigen::Vector2d> hull;
-      for (const auto &p : pts)
-      {
-        while (hull.size() >= 2 && cross2d(hull[hull.size() - 2], hull.back(), p) <= 0)
-        {
-          hull.pop_back();
-        }
-        hull.push_back(p);
-      }
-      size_t lower_size = hull.size();
-      for (int i = (int)pts.size() - 2; i >= 0; --i)
-      {
-        const auto &p = pts[i];
-        while (hull.size() > lower_size && cross2d(hull[hull.size() - 2], hull.back(), p) <= 0)
-        {
-          hull.pop_back();
-        }
-        hull.push_back(p);
-      }
-      if (!hull.empty())
+      while (
+          hull.size() >= 2 &&
+          cross2d(
+              hull[hull.size() - 2],
+              hull.back(),
+              point) <= 1e-12)
       {
         hull.pop_back();
       }
-      return hull;
-    };
 
-    // pointInPoly: 判断点 p 是否在凸多边形 poly 内（假设 poly 点序有一致方向）
-    auto pointInPoly = [&](const std::vector<Eigen::Vector3d> &poly, const Eigen::Vector3d &p)
+      hull.push_back(point);
+    }
+
+    const std::size_t lower_size =
+        hull.size();
+
+    for (int i =
+             static_cast<int>(points.size()) - 2;
+         i >= 0;
+         --i)
     {
-      for (size_t i = 0; i < poly.size(); ++i)
+      const auto &point =
+          points[static_cast<std::size_t>(i)];
+
+      while (
+          hull.size() > lower_size &&
+          cross2d(
+              hull[hull.size() - 2],
+              hull.back(),
+              point) <= 1e-12)
       {
-        const auto &p1 = poly[i];
-        const auto &p2 = poly[(i + 1) % poly.size()];
-        Eigen::Vector2d v1(p2.x() - p1.x(), p2.y() - p1.y());
-        Eigen::Vector2d v2(p.x() - p1.x(), p.y() - p1.y());
-        if (v1.x() * v2.y() - v2.x() * v1.y() < 0)
+        hull.pop_back();
+      }
+
+      hull.push_back(point);
+    }
+
+    if (!hull.empty())
+    {
+      hull.pop_back();
+    }
+
+    return hull;
+  };
+
+  auto pointInConvexHull =
+      [&](const std::vector<Eigen::Vector2d> &hull,
+          const Eigen::Vector2d &point)
+  {
+    if (hull.size() < 3)
+    {
+      return false;
+    }
+
+    for (std::size_t i = 0;
+         i < hull.size();
+         ++i)
+    {
+      if (cross2d(
+              hull[i],
+              hull[(i + 1) % hull.size()],
+              point) < -1e-9)
+      {
+        return false;
+      }
+    }
+
+    return true;
+  };
+
+  // =====================================================
+  // 3. 支撑姿态迭代
+  // =====================================================
+  for (int iteration = 0;
+       iteration < max_iterations_;
+       ++iteration)
+  {
+    Eigen::MatrixXd gap_map(
+        robot_rows_,
+        robot_cols_);
+
+    gap_map.setConstant(
+        std::numeric_limits<double>::quiet_NaN());
+
+    double min_gap =
+        std::numeric_limits<double>::infinity();
+
+    // ---------------------------------------------------
+    // 3.1 计算当前车辆模型所有点到地形的间隙
+    // ---------------------------------------------------
+    for (int i = 0;
+         i < robot_rows_;
+         ++i)
+    {
+      for (int j = 0;
+           j < robot_cols_;
+           ++j)
+      {
+        const Eigen::Vector4d model_point(
+            vehicle_model.X_(i, j),
+            vehicle_model.Y_(i, j),
+            vehicle_model.Z_(i, j),
+            1.0);
+
+        const Eigen::Vector4d world_point =
+            T_matrix * model_point;
+
+        grid_map::Index terrain_idx;
+
+        if (!submap.getIndex(
+                grid_map::Position(
+                    world_point.x(),
+                    world_point.y()),
+                terrain_idx))
         {
-          return false;
+          continue;
+        }
+
+        const float terrain_z =
+            submap.at(
+                "elevation_BGK",
+                terrain_idx);
+
+        if (!std::isfinite(terrain_z))
+        {
+          continue;
+        }
+
+        const double gap =
+            world_point.z() -
+            static_cast<double>(terrain_z);
+
+        gap_map(i, j) = gap;
+        min_gap = std::min(min_gap, gap);
+      }
+    }
+
+    if (!std::isfinite(min_gap))
+    {
+      return kPoseFailure;
+    }
+
+    // 整车竖直落地，使最低模型点接触地形。
+    T_matrix(2, 3) -= min_gap;
+
+    // ---------------------------------------------------
+    // 3.2 落地后重新查找支撑点和底盘碰撞
+    // ---------------------------------------------------
+    std::vector<Eigen::Vector3d>
+        support_points_world;
+
+    std::vector<Eigen::Vector2d>
+        support_points_model;
+
+    contact_points = 0;
+    bool collision = false;
+
+    for (int i = 0;
+         i < robot_rows_;
+         ++i)
+    {
+      for (int j = 0;
+           j < robot_cols_;
+           ++j)
+      {
+        const Eigen::Vector4d model_point(
+            vehicle_model.X_(i, j),
+            vehicle_model.Y_(i, j),
+            vehicle_model.Z_(i, j),
+            1.0);
+
+        const Eigen::Vector4d world_point =
+            T_matrix * model_point;
+
+        grid_map::Index terrain_idx;
+
+        if (!submap.getIndex(
+                grid_map::Position(
+                    world_point.x(),
+                    world_point.y()),
+                terrain_idx))
+        {
+          continue;
+        }
+
+        const float terrain_z =
+            submap.at(
+                "elevation_BGK",
+                terrain_idx);
+
+        if (!std::isfinite(terrain_z))
+        {
+          continue;
+        }
+
+        const double gap =
+            world_point.z() -
+            static_cast<double>(terrain_z);
+
+        gap_map(i, j) = gap;
+
+        // false：车轮或履带点
+        // true ：底盘碰撞敏感点
+        const bool collision_sensitive =
+            checkWheel(vehicle_type, i, j);
+
+        if (!collision_sensitive &&
+            gap <= touch_gap_threshold_)
+        {
+          ++contact_points;
+
+          // 必须使用模型点的实际世界位置作为支撑轴点。
+          support_points_world.emplace_back(
+              world_point.x(),
+              world_point.y(),
+              world_point.z());
+
+          support_points_model.emplace_back(
+              vehicle_model.X_(i, j),
+              vehicle_model.Y_(i, j));
+        }
+
+        if (collision_sensitive &&
+            gap < collision_gap_threshold_)
+        {
+          collision = true;
         }
       }
-      return true;
-    };
+    }
 
-    // 计算支撑凸包（模型系 2D）
-    std::vector<Eigen::Vector2d> hull_2d = computeHull(touch_points_2d);
-
-    // Keep the actual transformed height of each support sample.  Using one
-    // global minimum model height for all hull vertices is incorrect for the
-    // raised front/rear portions of the tracked model.
-    touch_poly.clear();
-    for (const auto &p : hull_2d)
+    if (collision)
     {
-      for (std::size_t k = 0; k < touch_points_2d.size(); ++k)
+      stable = 0;
+      updateRollPitchFromT(T_matrix);
+      return kPoseCollision;
+    }
+
+    if (support_points_world.empty())
+    {
+      return kPoseFailure;
+    }
+
+    // ---------------------------------------------------
+    // 3.3 根据接触点形成点、线或面支撑
+    // ---------------------------------------------------
+    const std::vector<Eigen::Vector2d>
+        hull_model =
+            computeHull(support_points_model);
+
+    if (hull_model.empty())
+    {
+      return kPoseFailure;
+    }
+
+    std::vector<Eigen::Vector3d> hull_world;
+    hull_world.reserve(hull_model.size());
+
+    for (const auto &hull_point : hull_model)
+    {
+      bool found = false;
+
+      for (std::size_t k = 0;
+           k < support_points_model.size();
+           ++k)
       {
-        if ((touch_points_2d[k] - p).squaredNorm() < 1e-12)
+        if ((support_points_model[k] -
+             hull_point)
+                .squaredNorm() < 1e-12)
         {
-          touch_poly.push_back(touch_points[k]);
+          hull_world.push_back(
+              support_points_world[k]);
+
+          found = true;
           break;
         }
       }
+
+      if (!found)
+      {
+        return kPoseFailure;
+      }
     }
 
-    if (touch_poly.size() < 3 || touch_poly.size() != hull_2d.size())
-    {
-      return kPoseFailure;
-    }
+    Eigen::Vector3d rotate_point_1 =
+        Eigen::Vector3d::Zero();
+
+    Eigen::Vector3d rotate_point_2 =
+        Eigen::Vector3d::Zero();
+
+    bool has_rotation_axis = false;
 
     double hull_area_twice = 0.0;
-    for (std::size_t i = 0; i < hull_2d.size(); ++i)
-    {
-      const auto &p1 = hull_2d[i];
-      const auto &p2 = hull_2d[(i + 1) % hull_2d.size()];
-      hull_area_twice += p1.x() * p2.y() - p2.x() * p1.y();
-    }
-    if (!std::isfinite(hull_area_twice) ||
-        std::fabs(hull_area_twice) < 2e-4)
-    {
-      return kPoseFailure;
-    }
 
-    // 重力方向（世界系向下）
-    Eigen::Vector3d gravity(0, 0, -1);
-    // 车辆当前平移位置（世界系）
-    Eigen::Vector3d T_pos = T_matrix.block<3, 1>(0, 3);
-    // 从车辆位置沿重力方向作一条直线
-    Eigen::ParametrizedLine<double, 3> gravity_line(T_pos, gravity);
-    // Fit the support plane from the actual permitted contact points.
-    Eigen::Vector3d plane_normal = fitPlane(touch_poly);
-    if (!plane_normal.allFinite() || plane_normal.norm() < 1e-6 ||
-        std::fabs(plane_normal.dot(gravity)) < 1e-6)
+    if (hull_model.size() >= 3)
     {
-      return kPoseFailure;
-    }
-    Eigen::Hyperplane<double, 3> contact_plane(plane_normal, touch_poly.front());
-    // 重力线与接触平面的交点：可理解为“重心沿重力方向投影到接触平面的位置”
-    Eigen::Vector3d intersection = gravity_line.intersectionPoint(contact_plane);
-    if (!intersection.allFinite())
-    {
-      return kPoseFailure;
-    }
-
-    Eigen::Vector3d rotatep1, rotatep2;
-    bool has_rotation_line = false;
-
-    // At this point the hull has at least three non-collinear support points.
-    if (pointInPoly(touch_poly, intersection))
-    {
-      is_stable = true;
-    }
-    else
-    {
-      // Projection is outside the support polygon.  Find the nearest exterior
-      // hull edge and use it as the candidate rotation axis.
-      double min_dis = std::numeric_limits<double>::max();
-      bool found_rotation_edge = false;
-
-      for (size_t i = 0; i < touch_poly.size(); ++i)
+      for (std::size_t i = 0;
+           i < hull_model.size();
+           ++i)
       {
-        const auto &p1 = touch_poly[i];
-        const auto &p2 = touch_poly[(i + 1) % touch_poly.size()];
+        const Eigen::Vector2d &p1 =
+            hull_model[i];
 
-        Eigen::Vector2d v1(p2.x() - p1.x(), p2.y() - p1.y());
-        Eigen::Vector2d v2(intersection.x() - p1.x(),
-                           intersection.y() - p1.y());
-        if (v1.x() * v2.y() - v2.x() * v1.y() >= 0)
+        const Eigen::Vector2d &p2 =
+            hull_model[(i + 1) %
+                       hull_model.size()];
+
+        hull_area_twice +=
+            p1.x() * p2.y() -
+            p2.x() * p1.y();
+      }
+    }
+
+    const bool has_support_area =
+        hull_model.size() >= 3 &&
+        std::isfinite(hull_area_twice) &&
+        std::fabs(hull_area_twice) >= 2e-4;
+
+    // ===================================================
+    // 4. 点支撑或者线支撑
+    // ===================================================
+    if (!has_support_area)
+    {
+      // 点支撑：围绕经过接触点的水平轴转动。
+      if (hull_world.size() == 1)
+      {
+        const Eigen::Vector3d center_world =
+            T_matrix.block<3, 1>(0, 3);
+
+        Eigen::Vector3d contact_to_center(
+            center_world.x() -
+                hull_world[0].x(),
+            center_world.y() -
+                hull_world[0].y(),
+            0.0);
+
+        if (!contact_to_center.allFinite() ||
+            contact_to_center.norm() < 1e-6)
         {
-          continue;
+          stable = 0;
+          return kPoseUnstable;
         }
 
-        const Eigen::Vector3d p1p2 = p2 - p1;
-        const double edge_norm_squared = p1p2.squaredNorm();
-        if (!std::isfinite(edge_norm_squared) || edge_norm_squared < 1e-12)
+        const Eigen::Vector3d point_axis =
+            contact_to_center.cross(gravity);
+
+        if (!point_axis.allFinite() ||
+            point_axis.norm() < 1e-6)
         {
-          continue;
+          stable = 0;
+          return kPoseUnstable;
         }
-        const Eigen::Vector3d p1a = intersection - p1;
-        const double t = p1a.dot(p1p2) / edge_norm_squared;
-        const Eigen::Vector3d projection = p1 + t * p1p2;
-        const double dis = (projection - intersection).norm();
 
-        if (std::isfinite(dis) && dis < min_dis)
+        rotate_point_1 = hull_world[0];
+
+        rotate_point_2 =
+            rotate_point_1 +
+            point_axis.normalized();
+
+        has_rotation_axis = true;
+      }
+      else
+      {
+        // 两点或多个共线点：
+        // 使用距离最远的两个点构造支撑轴。
+        double max_distance_squared = -1.0;
+
+        for (std::size_t i = 0;
+             i < hull_world.size();
+             ++i)
         {
-          min_dis = dis;
-          rotatep1 = p1;
-          rotatep2 = p2;
-          found_rotation_edge = true;
-        }
-      }
-
-      has_rotation_line = found_rotation_edge;
-    }
-
-    // 如果稳定了，就进入下一轮循环开头，开头会 return 2
-    if (is_stable)
-    {
-      updateRollPitchFromT(T_matrix);
-      if (exceedsTiltLimit(T_matrix))
-      {
-        stable = 0;
-        return kPoseUnstable;
-      }
-      stable = 1;
-      return kPoseSuccess;
-    }
-
-    if (has_rotation_line)
-    {
-      // 旋转轴的方向与参数化直线
-      const Eigen::Vector3d axis = rotatep2 - rotatep1;
-      if (!axis.allFinite() || axis.norm() < 1e-6)
-      {
-        return kPoseFailure;
-      }
-      Eigen::Vector3d direction = axis.normalized();
-      Eigen::ParametrizedLine<double, 3> rotation_line(rotatep1, direction);
-
-      // d_theta：要绕旋转轴转的角度（选一个最小可行值）
-      double d_theta = std::numeric_limits<double>::max();
-
-      // 为了计算点在旋转轴左/右侧，这里投影到 XY 平面做 2D 判断
-      Eigen::Vector2d rot_origin(rotation_line.origin().x(), rotation_line.origin().y());
-      Eigen::Vector2d rot_dir(rotation_line.direction().x(), rotation_line.direction().y());
-      if (!rot_dir.allFinite() || rot_dir.norm() < 1e-6)
-      {
-        return kPoseFailure;
-      }
-      Eigen::Vector2d rot_dir_norm = rot_dir.normalized();
-
-      // 遍历所有非接触点（gap > touch_gap_threshold_），估计需要转多少角
-      for (int i = 0; i < robot_rows_; ++i)
-      {
-        for (int j = 0; j < robot_cols_; ++j)
-        {
-          double gap = gap_map(i, j);
-
-          // NaN 或已经接触的点跳过
-          if (std::isnan(gap) || gap <= touch_gap_threshold_)
+          for (std::size_t j = i + 1;
+               j < hull_world.size();
+               ++j)
           {
-            continue;
-          }
+            const double distance_squared =
+                (hull_world[j] -
+                 hull_world[i])
+                    .squaredNorm();
 
-          // 点变换到世界系
-          Eigen::Vector4d robot_point(vehicle_model.X_(i, j), vehicle_model.Y_(i, j), vehicle_model.Z_(i, j), 1.0);
-          Eigen::Vector4d global_point = T_matrix * robot_point;
+            if (std::isfinite(distance_squared) &&
+                distance_squared >
+                    max_distance_squared)
+            {
+              max_distance_squared =
+                  distance_squared;
 
-          // 计算点相对旋转轴起点的 2D 向量
-          Eigen::Vector2d origin_to_cell(global_point.x() - rot_origin.x(), global_point.y() - rot_origin.y());
+              rotate_point_1 =
+                  hull_world[i];
 
-          // 判断点在旋转轴的哪一侧（叉积符号）
-          // 只对某一侧的点计算 d_theta（避免两边一起压导致矛盾）
-          if (origin_to_cell.x() * rot_dir_norm.y() - origin_to_cell.y() * rot_dir_norm.x() > 0)
-          {
-            // 计算点到旋转轴的垂直距离 distance（在 XY 平面）
-            Eigen::Vector2d proj_vec = origin_to_cell.dot(rot_dir_norm) * rot_dir_norm;
-            double distance = (origin_to_cell - proj_vec).norm();
-
-            // atan2(gap, distance) 是一个“需要转的角度”的几何估计：
-            // gap 越大、distance 越小 -> 需要更大角度把它压下来
-            d_theta = std::min(d_theta, std::atan2(gap, distance));
+              rotate_point_2 =
+                  hull_world[j];
+            }
           }
         }
-      }
 
-      // 如果找到了有效 d_theta，就绕 rotation_line 旋转更新 T_matrix
-      if (d_theta < std::numeric_limits<double>::max())
-      {
-        const double max_rotation_step =
-            fine_max_rotation_step_deg * M_PI / 180.0;
-        d_theta = std::max(0.0, std::min(d_theta, max_rotation_step));
-
-        // 下面是一套标准的“绕任意轴旋转”的齐次矩阵构造：
-        // 1) 平移到轴原点
-        // 2) 旋转坐标系，让旋转轴对齐到 z 轴
-        // 3) 绕 z 轴旋转 d_theta
-        // 4) 旋转回去
-        // 5) 平移回去
-
-        Eigen::Matrix4d T1 = Eigen::Matrix4d::Identity();
-        T1.block<3, 1>(0, 3) = -rotation_line.origin();
-
-        Eigen::Matrix4d R1 = Eigen::Matrix4d::Identity();
-        R1.block<3, 3>(0, 0) =
-            Eigen::Quaterniond().setFromTwoVectors(rotation_line.direction(), Eigen::Vector3d(0, 0, 1)).toRotationMatrix();
-
-        Eigen::Matrix4d R2 = Eigen::Matrix4d::Identity();
-        R2.block<3, 3>(0, 0) = Eigen::AngleAxisd(d_theta, Eigen::Vector3d(0, 0, 1)).toRotationMatrix();
-
-        Eigen::Matrix4d R3 = Eigen::Matrix4d::Identity();
-        R3.block<3, 3>(0, 0) = R1.block<3, 3>(0, 0).transpose();
-
-        Eigen::Matrix4d T2 = Eigen::Matrix4d::Identity();
-        T2.block<3, 1>(0, 3) = rotation_line.origin();
-
-        Eigen::Matrix4d rotate_with_rotation_line = T2 * R3 * R2 * R1 * T1;
-
-        // 更新车辆位姿
-        T_matrix = rotate_with_rotation_line * T_matrix;
-
-        // 旋转可能引起 xy 平移漂移，这里强制把 xy 拉回 center_pos
-        T_matrix.block<2, 1>(0, 3) = Eigen::Vector2d(center_pos.x(), center_pos.y());
-
-        if (!T_matrix.allFinite())
+        if (max_distance_squared < 1e-12)
         {
           return kPoseFailure;
         }
 
-        if (exceedsTiltLimit(T_matrix))
-        {
-          stable = 0;
-          updateRollPitchFromT(T_matrix);
-          return kPoseUnstable;
-        }
+        has_rotation_axis = true;
       }
-      else
+    }
+    // ===================================================
+    // 5. 面支撑
+    // ===================================================
+    else
+    {
+      Eigen::Vector3d support_normal =
+          fitPlane(hull_world);
+
+      if (!support_normal.allFinite() ||
+          support_normal.norm() < 1e-6)
       {
         return kPoseFailure;
       }
+
+      support_normal.normalize();
+
+      if (support_normal.z() < 0.0)
+      {
+        support_normal = -support_normal;
+      }
+
+      if (std::fabs(
+              support_normal.dot(gravity)) <
+          1e-6)
+      {
+        stable = 0;
+        return kPoseUnstable;
+      }
+
+      const Eigen::Vector3d center_world =
+          T_matrix.block<3, 1>(0, 3);
+
+      const Eigen::ParametrizedLine<double, 3>
+          gravity_line(
+              center_world,
+              gravity);
+
+      const Eigen::Hyperplane<double, 3>
+          support_plane(
+              support_normal,
+              hull_world.front());
+
+      const Eigen::Vector3d
+          gravity_projection_world =
+              gravity_line.intersectionPoint(
+                  support_plane);
+
+      if (!gravity_projection_world.allFinite())
+      {
+        return kPoseFailure;
+      }
+
+      // 支撑凸包在车辆模型坐标系中建立，
+      // 因此重力投影也必须转换到模型坐标系判断。
+      const Eigen::Vector4d projection_world_h(
+          gravity_projection_world.x(),
+          gravity_projection_world.y(),
+          gravity_projection_world.z(),
+          1.0);
+
+      const Eigen::Vector4d projection_model_h =
+          T_matrix.inverse() *
+          projection_world_h;
+
+      if (!projection_model_h.allFinite())
+      {
+        return kPoseFailure;
+      }
+
+      const Eigen::Vector2d projection_model(
+          projection_model_h.x(),
+          projection_model_h.y());
+
+      if (contact_points >=
+              fine_min_support_points &&
+          pointInConvexHull(
+              hull_model,
+              projection_model))
+      {
+        updateRollPitchFromT(T_matrix);
+
+        if (exceedsTiltLimit(T_matrix))
+        {
+          stable = 0;
+          return kPoseUnstable;
+        }
+
+        stable = 1;
+        return kPoseSuccess;
+      }
+
+      // 重力投影位于支撑面外：
+      // 查找距离投影最近的外侧凸包边。
+      double nearest_distance_squared =
+          std::numeric_limits<double>::infinity();
+
+      for (std::size_t i = 0;
+           i < hull_model.size();
+           ++i)
+      {
+        const std::size_t next =
+            (i + 1) %
+            hull_model.size();
+
+        const Eigen::Vector2d edge =
+            hull_model[next] -
+            hull_model[i];
+
+        const double edge_length_squared =
+            edge.squaredNorm();
+
+        if (edge_length_squared < 1e-12)
+        {
+          continue;
+        }
+
+        // 凸包为逆时针顺序。
+        // 叉积为负表示投影位于该边外侧。
+        if (cross2d(
+                hull_model[i],
+                hull_model[next],
+                projection_model) >= -1e-9)
+        {
+          continue;
+        }
+
+        double t =
+            (projection_model -
+             hull_model[i])
+                .dot(edge) /
+            edge_length_squared;
+
+        t = std::max(
+            0.0,
+            std::min(1.0, t));
+
+        const Eigen::Vector2d nearest =
+            hull_model[i] +
+            t * edge;
+
+        const double distance_squared =
+            (projection_model - nearest)
+                .squaredNorm();
+
+        if (distance_squared <
+            nearest_distance_squared)
+        {
+          nearest_distance_squared =
+              distance_squared;
+
+          rotate_point_1 =
+              hull_world[i];
+
+          rotate_point_2 =
+              hull_world[next];
+
+          has_rotation_axis = true;
+        }
+      }
     }
-    else
+
+    if (!has_rotation_axis)
     {
       return kPoseFailure;
     }
 
-    iteration++;
+    // ===================================================
+    // 6. 根据重力力矩确定旋转方向
+    // ===================================================
+    const Eigen::Vector3d axis =
+        rotate_point_2 -
+        rotate_point_1;
+
+    if (!axis.allFinite() ||
+        axis.norm() < 1e-6)
+    {
+      return kPoseFailure;
+    }
+
+    const Eigen::Vector3d axis_direction =
+        axis.normalized();
+
+    const Eigen::Vector3d center_world =
+        T_matrix.block<3, 1>(0, 3);
+
+    const double gravity_moment =
+        axis_direction.dot(
+            (center_world -
+             rotate_point_1)
+                .cross(gravity));
+
+    if (!std::isfinite(gravity_moment) ||
+        std::fabs(gravity_moment) < 1e-9)
+    {
+      stable = 0;
+      updateRollPitchFromT(T_matrix);
+      return kPoseUnstable;
+    }
+
+    const double rotation_sign =
+        gravity_moment > 0.0
+            ? 1.0
+            : -1.0;
+
+    // ===================================================
+    // 7. 从车轮/履带区域中寻找下一个接地点
+    // ===================================================
+    double rotation_step =
+        std::numeric_limits<double>::infinity();
+
+    for (int i = 0;
+         i < robot_rows_;
+         ++i)
+    {
+      for (int j = 0;
+           j < robot_cols_;
+           ++j)
+      {
+        // checkWheel=true 表示底盘点。
+        // 底盘点不能作为新的支撑接地点。
+        if (checkWheel(vehicle_type, i, j))
+        {
+          continue;
+        }
+
+        const double gap =
+            gap_map(i, j);
+
+        if (!std::isfinite(gap) ||
+            gap <= touch_gap_threshold_)
+        {
+          continue;
+        }
+
+        const Eigen::Vector4d model_point(
+            vehicle_model.X_(i, j),
+            vehicle_model.Y_(i, j),
+            vehicle_model.Z_(i, j),
+            1.0);
+
+        const Eigen::Vector3d world_point =
+            (T_matrix * model_point)
+                .head<3>();
+
+        const Eigen::Vector3d radius =
+            world_point -
+            rotate_point_1;
+
+        // 对绕轴旋转：
+        // dP/dtheta = axis × radius
+        //
+        // z方向速度小于0，说明这个点会向地面运动。
+        const double vertical_rate =
+            (rotation_sign *
+             axis_direction.cross(radius))
+                .z();
+
+        if (!std::isfinite(vertical_rate) ||
+            vertical_rate >= -1e-8)
+        {
+          continue;
+        }
+
+        const double remaining_gap =
+            gap -
+            touch_gap_threshold_;
+
+        const double candidate_step =
+            remaining_gap /
+            (-vertical_rate);
+
+        if (std::isfinite(candidate_step) &&
+            candidate_step > 1e-8)
+        {
+          rotation_step =
+              std::min(
+                  rotation_step,
+                  candidate_step);
+        }
+      }
+    }
+
+    if (!std::isfinite(rotation_step))
+    {
+      return kPoseFailure;
+    }
+
+    const double max_rotation_step =
+        fine_max_rotation_step_deg *
+        M_PI / 180.0;
+
+    rotation_step =
+        std::min(
+            rotation_step,
+            max_rotation_step);
+
+    if (rotation_step < 1e-8)
+    {
+      return kPoseFailure;
+    }
+
+    // ===================================================
+    // 8. 绕世界坐标系中的支撑轴旋转车辆
+    // ===================================================
+    const double signed_step =
+        rotation_sign *
+        rotation_step;
+
+    const Eigen::Matrix3d incremental_rotation =
+        Eigen::AngleAxisd(
+            signed_step,
+            axis_direction)
+            .toRotationMatrix();
+
+    Eigen::Matrix4d pivot_rotation =
+        Eigen::Matrix4d::Identity();
+
+    pivot_rotation.block<3, 3>(0, 0) =
+        incremental_rotation;
+
+    pivot_rotation.block<3, 1>(0, 3) =
+        rotate_point_1 -
+        incremental_rotation *
+            rotate_point_1;
+
+    T_matrix =
+        pivot_rotation *
+        T_matrix;
+
+    // 不要执行下面这种旧逻辑：
+    //
+    // T_matrix.block<2, 1>(0, 3) =
+    //     Eigen::Vector2d(center_pos.x(), center_pos.y());
+    //
+    // 因为它会破坏绕支撑轴旋转的刚体约束。
+
+    if (!T_matrix.allFinite())
+    {
+      return kPoseFailure;
+    }
+
+    if (exceedsTiltLimit(T_matrix))
+    {
+      stable = 0;
+      updateRollPitchFromT(T_matrix);
+      return kPoseUnstable;
+    }
   }
 
-  // -----------------------------------------
-  // [H1] 从最终旋转矩阵提取 roll/pitch（并转成度）
-  // -----------------------------------------
+  // 达到最大迭代次数仍未形成稳定支撑面。
   updateRollPitchFromT(T_matrix);
-
-  ROS_INFO("Pose result (vehicle %d) at cell (%.2f, %.2f): roll=%.3f, pitch=%.3f, stable=%d, collision=%d",
-           vehicle_type, center_pos.x(), center_pos.y(), roll, pitch, is_stable ? 1 : 0, collision ? 1 : 0);
-
-  stable = is_stable ? 1 : 0;
-
-  // -----------------------------------------
-  // [H2] 返回码约定
-  // -----------------------------------------
-  // 2 = 成功且稳定
-  // 1 = 碰撞（上面已经提前 return 1）
-  // 3 = 姿态超过物理倾角限制
-  // 0 = 未稳定或失败
-  return is_stable ? kPoseSuccess : kPoseFailure;
+  stable = 0;
+  return kPoseFailure;
 }
 
-bool Mapping::checkWheel(int vehicle_type, int i, int j) const
+bool Mapping::checkWheel(int vehicle_type,
+                         int i,
+                         int j) const
 {
-  // false：车轮/履带接触区域
-  // true：底盘区域，需要检查碰撞
+  // 返回 false：车轮或履带接触区域。
+  // 返回 true ：底盘区域，需要检查碰撞。
+
   if (vehicle_type == 1)
   {
-    static const std::array<int, 4> wheel_rows = {0, 1, 7, 8};
+    // 轮式车：左右边缘行与前后轮列的交集。
+    static const std::array<int, 4>
+        wheel_rows = {
+            0, 1, 7, 8};
 
-    static const std::array<int, 5> wheel_cols = {1, 2, 3, 8, 9};
+    static const std::array<int, 5>
+        wheel_cols = {
+            1, 2, 3, 8, 9};
 
-    const bool row_matches = std::find(wheel_rows.begin(), wheel_rows.end(), i) != wheel_rows.end();
+    const bool in_wheel_row =
+        std::find(
+            wheel_rows.begin(),
+            wheel_rows.end(),
+            i) != wheel_rows.end();
 
-    const bool col_matches = std::find(wheel_cols.begin(), wheel_cols.end(), j) != wheel_cols.end();
+    const bool in_wheel_col =
+        std::find(
+            wheel_cols.begin(),
+            wheel_cols.end(),
+            j) != wheel_cols.end();
 
-    return !(row_matches && col_matches);
+    return !(in_wheel_row &&
+             in_wheel_col);
   }
 
   if (vehicle_type == 2)
   {
-    static const std::array<int, 4> track_rows = {0, 1, 7, 8};
+    // 履带车：履带位于车辆宽度方向两侧，
+    // 并沿车辆长度方向连续分布。
+    //
+    // 必须使用行 i 判断，不能使用列 j。
+    static const std::array<int, 4>
+        track_rows = {
+            0, 1, 7, 8};
 
-    const bool is_track = std::find(track_rows.begin(), track_rows.end(), i) != track_rows.end();
+    const bool in_track_row =
+        std::find(
+            track_rows.begin(),
+            track_rows.end(),
+            i) != track_rows.end();
 
-    return !is_track;
+    return !in_track_row;
   }
 
   return true;
 }
+
+// int Mapping::predictRobotPose(const grid_map::Index &center_idx, double &roll, double &pitch,
+//                               int &contact_points, int &stable, const Eigen::Matrix3d &yaw_rotation,
+//                               const HeightGrid &vehicle_model, int vehicle_type)
+// {
+//   roll = 0.0;
+//   pitch = 0.0;
+//   contact_points = 0;
+//   stable = 0;
+
+//   static bool pose_limits_configured = false;
+//   static int fine_min_support_points = 3;
+//   static double fine_max_rotation_step_deg = 5.0;
+//   static double fine_max_pose_tilt_deg = 60.0;
+//   if (!pose_limits_configured)
+//   {
+//     pnh_.param<int>("fine_min_support_points", fine_min_support_points, 3);
+//     pnh_.param<double>("fine_max_rotation_step_deg", fine_max_rotation_step_deg, 5.0);
+//     pnh_.param<double>("fine_max_pose_tilt_deg", fine_max_pose_tilt_deg, 60.0);
+
+//     fine_min_support_points = std::max(3, fine_min_support_points);
+//     fine_max_rotation_step_deg = std::max(0.1, std::min(30.0, fine_max_rotation_step_deg));
+//     fine_max_pose_tilt_deg = std::max(1.0, std::min(89.0, fine_max_pose_tilt_deg));
+//     pose_limits_configured = true;
+//   }
+
+//   // -----------------------------------------
+//   // [A1] 将中心 cell 索引转成连续坐标 (x,y)
+//   // -----------------------------------------
+//   // center_pos 是地图坐标系中的平面位置，用来获取子地图并作为车辆平移中心
+//   grid_map::Position center_pos;
+//   if (!height_map_.getPosition(center_idx, center_pos))
+//   {
+//     return kPoseFailure;
+//   }
+
+//   // -----------------------------------------
+//   // [A2] 计算一个足够覆盖车辆的子地图范围（正方形）
+//   // -----------------------------------------
+//   // vehicle_model 是 robot_rows_ x robot_cols_ 的离散采样网格（车辆足迹/底盘采样点）
+//   // robot_model_resolution_ 是模型网格的分辨率
+//   //
+//   // 这里把车辆占地宽/长估计出来，然后取对角线长度作为子地图边长（submap_side）
+//   double vehicle_width = robot_rows_ * robot_model_resolution_;
+//   double vehicle_length = robot_cols_ * robot_model_resolution_;
+//   double submap_side = std::sqrt(vehicle_width * vehicle_width + vehicle_length * vehicle_length);
+//   grid_map::Length submap_length(submap_side, submap_side);
+
+//   bool success;
+//   grid_map::GridMap submap = height_map_.getSubmap(center_pos, submap_length, success);
+
+//   if (!success)
+//   {
+//     return kPoseFailure;
+//   }
+
+//   // -----------------------------------------
+//   // [B1] 收集子地图内所有有效地形点，用于拟合一个局部平面
+//   // -----------------------------------------
+//   // terrain_points 用于 fitPlane()：得到局部地形法向 normal
+//   std::vector<Eigen::Vector3d> terrain_points;
+//   for (grid_map::GridMapIterator it(submap); !it.isPastEnd(); ++it)
+//   {
+//     grid_map::Index idx = *it;
+//     float z = submap.at("elevation_BGK", idx);
+
+//     // elevation_BGK 有 NaN 的格子跳过
+//     if (!std::isnan(z))
+//     {
+//       grid_map::Position pos;
+//       submap.getPosition(idx, pos);
+//       terrain_points.push_back(Eigen::Vector3d(pos.x(), pos.y(), z));
+//     }
+//   }
+
+//   // 点太少无法拟合平面
+//   if (terrain_points.size() < 4)
+//   {
+//     return kPoseFailure;
+//   }
+
+//   // -----------------------------------------
+//   // [B2] 拟合平面得到法向 normal（fitPlane 内部一般就是 PCA/最小二乘）
+//   // -----------------------------------------
+//   Eigen::Vector3d normal = fitPlane(terrain_points);
+
+//   // -----------------------------------------
+//   // [B3] 用 normal 计算“让车辆 z轴对齐到 normal 的旋转”= 地形坡度姿态（roll/pitch）
+//   // -----------------------------------------
+//   // z_axis = 世界竖直方向
+//   Eigen::Vector3d z_axis(0, 0, 1);
+
+//   // rotation_axis = z_axis x normal：把 z 转到 normal 的旋转轴
+//   Eigen::Vector3d rotation_axis = z_axis.cross(normal);
+
+//   Eigen::Matrix3d terrain_rotation = Eigen::Matrix3d::Identity();
+//   if (rotation_axis.norm() > 1e-6)
+//   {
+//     // angle = arccos(z · normal)：夹角
+//     double angle = std::acos(std::min(1.0, std::max(-1.0, z_axis.dot(normal))));
+
+//     // terrain_rotation：绕 rotation_axis 旋转 angle
+//     Eigen::AngleAxisd aa(angle, rotation_axis.normalized());
+//     terrain_rotation = aa.toRotationMatrix();
+//   }
+
+//   // -----------------------------------------
+//   // [B4] 合成最终初始姿态：R = yaw * (roll/pitch)
+//   // -----------------------------------------
+//   // yaw_rotation 是外部传入的“车辆航向角”旋转（绕 Z）
+//   // terrain_rotation 是“坡面倾斜”旋转（把 z 对齐到 normal）
+//   // 注意：矩阵乘法顺序很重要
+//   // R = yaw * terrain ：表示先对齐坡面，再施加车辆航向
+//   // Apply heading first, then tilt the vehicle so its local Z axis remains
+//   // aligned with the world-frame terrain normal.
+//   Eigen::Matrix3d R_matrix = terrain_rotation * yaw_rotation;
+
+//   // -----------------------------------------
+//   // [B5] 构造齐次变换 T：初始把车辆模型放在 (center_x, center_y, z=0) 上
+//   // -----------------------------------------
+//   Eigen::Matrix4d T_matrix = Eigen::Matrix4d::Identity();
+//   T_matrix.block<3, 3>(0, 0) = R_matrix;
+//   T_matrix.block<3, 1>(0, 3) = Eigen::Vector3d(center_pos.x(), center_pos.y(), 0.0);
+
+//   // ==================== Iterative Pose Refinement ====================
+//   // min_gap：车辆模型点到地形的最小“垂直间隙”（global_point.z - terrain_z）
+//   double min_gap = 100.0;
+//   std::vector<Eigen::Vector3d> touch_points;
+//   std::vector<Eigen::Vector3d> touch_poly;
+//   bool is_stable = false;
+//   contact_points = 0;
+//   bool collision = false;
+
+//   // --------- helper: 从当前 T_matrix 提取 roll/pitch（单位：deg）---------
+//   auto updateRollPitchFromT = [&](const Eigen::Matrix4d &T)
+//   {
+//     Eigen::Matrix3d R = T.block<3, 3>(0, 0);
+
+//     // roll = atan2(R21, R22)
+//     roll = std::atan2(R(2, 1), R(2, 2)) * 180.0 / M_PI;
+
+//     // pitch = asin(-R20)，做一下数值夹紧避免 asin 输入略超 [-1,1]
+//     double s = -R(2, 0);
+//     s = std::max(-1.0, std::min(1.0, s));
+//     pitch = std::asin(s) * 180.0 / M_PI;
+//   };
+
+//   auto exceedsTiltLimit = [&](const Eigen::Matrix4d &T)
+//   {
+//     if (!T.allFinite())
+//     {
+//       return true;
+//     }
+//     const Eigen::Vector3d body_up = T.block<3, 3>(0, 0).col(2);
+//     if (!body_up.allFinite() || body_up.norm() < 1e-6)
+//     {
+//       return true;
+//     }
+//     const double max_tilt_rad =
+//         fine_max_pose_tilt_deg * M_PI / 180.0;
+//     return body_up.normalized().z() < std::cos(max_tilt_rad);
+//   };
+
+//   // ==================== Iterative Rotation ====================
+//   int iteration = 0;
+//   while (iteration < max_iterations_)
+//   {
+//     // Step 0: Check collision and stability
+//     if (collision)
+//     {
+//       stable = 0;
+//       return kPoseCollision;
+//     }
+
+//     if (is_stable)
+//     {
+//       updateRollPitchFromT(T_matrix);
+//       if (exceedsTiltLimit(T_matrix))
+//       {
+//         stable = 0;
+//         return kPoseUnstable;
+//       }
+//       stable = 1;
+//       return kPoseSuccess;
+//     }
+
+//     // -----------------------------------------
+//     // [C1] 计算 gap_map，并找最小间隙 min_gap
+//     // -----------------------------------------
+//     // gap_map(i,j) 表示：车辆模型网格点 (i,j) 变换到世界后，与地形高度的差值
+//     // gap = z_vehicle_point - z_terrain
+//     // gap>0: 车辆在地形上方（悬空）
+//     // gap≈0: 接触
+//     // gap<0: 穿透/碰撞（这里用 collision_gap_threshold_ 判定）
+//     min_gap = 100.0;
+//     Eigen::MatrixXd gap_map(robot_rows_, robot_cols_);
+//     gap_map.setConstant(std::numeric_limits<double>::quiet_NaN());
+
+//     for (int i = 0; i < robot_rows_; ++i)
+//     {
+//       for (int j = 0; j < robot_cols_; ++j)
+//       {
+//         Eigen::Vector4d robot_point(vehicle_model.X_(i, j), vehicle_model.Y_(i, j), vehicle_model.Z_(i, j), 1.0);
+//         Eigen::Vector4d global_point = T_matrix * robot_point;
+
+//         grid_map::Index terrain_idx;
+//         if (submap.getIndex(grid_map::Position(global_point.x(), global_point.y()), terrain_idx))
+//         {
+//           float terrain_z = submap.at("elevation_BGK", terrain_idx);
+//           if (!std::isnan(terrain_z))
+//           {
+//             double gap = global_point.z() - terrain_z;
+//             gap_map(i, j) = gap;
+//             min_gap = std::min(min_gap, gap);
+//           }
+//         }
+//       }
+//     }
+
+//     // -----------------------------------------
+//     // [C2] “落地”：整体向下平移 min_gap，让最接近地面的点恰好接触地面
+//     // -----------------------------------------
+//     // 如果 min_gap 是正数，说明所有点都在地面之上，向下移 min_gap 就会有最小点接触地面
+//     // 如果 min_gap 是负数，说明已经有点低于地面，T_matrix(2,3)-=min_gap 会把车往上抬
+//     if (min_gap < 100.0)
+//     {
+//       T_matrix(2, 3) -= min_gap;
+//     }
+
+//     // -----------------------------------------
+//     // [D1] 找接触点：gap < touch_gap_threshold_ 的点当作“支撑接触”
+//     // -----------------------------------------
+//     touch_points.clear();
+//     std::vector<Eigen::Vector2d> touch_points_2d;
+//     contact_points = 0;
+//     collision = false;
+
+//     for (int i = 0; i < robot_rows_; ++i)
+//     {
+//       for (int j = 0; j < robot_cols_; ++j)
+//       {
+//         Eigen::Vector4d robot_point(vehicle_model.X_(i, j), vehicle_model.Y_(i, j), vehicle_model.Z_(i, j), 1.0);
+//         Eigen::Vector4d global_point = T_matrix * robot_point;
+
+//         grid_map::Index terrain_idx;
+//         if (submap.getIndex(grid_map::Position(global_point.x(), global_point.y()), terrain_idx))
+//         {
+//           float terrain_z = submap.at("elevation_BGK", terrain_idx);
+//           if (!std::isnan(terrain_z))
+//           {
+//             double gap = global_point.z() - terrain_z;
+//             gap_map(i, j) = gap;
+
+//             const bool collision_sensitive =
+//                 checkWheel(vehicle_type, i, j);
+
+//             // Only wheel/track cells are support contacts.  Chassis cells are
+//             // evaluated independently against the configured body clearance.
+//             if (!collision_sensitive && gap < touch_gap_threshold_)
+//             {
+//               contact_points++;
+//               touch_points.push_back(Eigen::Vector3d(global_point.x(), global_point.y(), global_point.z()));
+//               touch_points_2d.push_back(Eigen::Vector2d(vehicle_model.X_(i, j), vehicle_model.Y_(i, j)));
+//             }
+
+//             if (collision_sensitive && gap < collision_gap_threshold_)
+//             {
+//               collision = true;
+//             }
+//           }
+//         }
+//       }
+//     }
+
+//     if (collision)
+//     {
+//       stable = 0;
+//       return kPoseCollision;
+//     }
+
+//     // A valid support polygon requires at least three non-collinear permitted
+//     // wheel/track contacts.  One- or two-point support must never be reported
+//     // as a stable vehicle pose.
+//     if (touch_points.size() <
+//         static_cast<std::size_t>(fine_min_support_points))
+//     {
+//       return kPoseFailure;
+//     }
+
+//     // Step 4: 支撑多边形 + 重力线投影
+//     // cross2d: 计算二维叉积符号，用于凸包判向
+//     auto cross2d = [](const Eigen::Vector2d &O, const Eigen::Vector2d &A, const Eigen::Vector2d &B)
+//     {
+//       return (A.x() - O.x()) * (B.y() - O.y()) - (A.y() - O.y()) * (B.x() - O.x());
+//     };
+
+//     // computeHull: 输入一堆 2D 点，输出凸包点序列（逆/顺时针）
+//     auto computeHull = [&](std::vector<Eigen::Vector2d> pts)
+//     {
+//       if (pts.size() <= 1)
+//       {
+//         return pts;
+//       }
+//       std::sort(pts.begin(), pts.end(), [](const Eigen::Vector2d &a, const Eigen::Vector2d &b)
+//                 {
+//                 if (a.x() == b.x())
+//                 {
+//                     return a.y() < b.y();
+//                 }
+//                 return a.x() < b.x(); });
+
+//       pts.erase(std::unique(pts.begin(), pts.end(),
+//                             [](const Eigen::Vector2d &a,
+//                                const Eigen::Vector2d &b)
+//                             {
+//                               return (a - b).squaredNorm() < 1e-12;
+//                             }),
+//                 pts.end());
+
+//       if (pts.size() <= 1)
+//       {
+//         return pts;
+//       }
+
+//       std::vector<Eigen::Vector2d> hull;
+//       for (const auto &p : pts)
+//       {
+//         while (hull.size() >= 2 && cross2d(hull[hull.size() - 2], hull.back(), p) <= 0)
+//         {
+//           hull.pop_back();
+//         }
+//         hull.push_back(p);
+//       }
+//       size_t lower_size = hull.size();
+//       for (int i = (int)pts.size() - 2; i >= 0; --i)
+//       {
+//         const auto &p = pts[i];
+//         while (hull.size() > lower_size && cross2d(hull[hull.size() - 2], hull.back(), p) <= 0)
+//         {
+//           hull.pop_back();
+//         }
+//         hull.push_back(p);
+//       }
+//       if (!hull.empty())
+//       {
+//         hull.pop_back();
+//       }
+//       return hull;
+//     };
+
+//     // pointInPoly: 判断点 p 是否在凸多边形 poly 内（假设 poly 点序有一致方向）
+//     auto pointInPoly = [&](const std::vector<Eigen::Vector3d> &poly, const Eigen::Vector3d &p)
+//     {
+//       for (size_t i = 0; i < poly.size(); ++i)
+//       {
+//         const auto &p1 = poly[i];
+//         const auto &p2 = poly[(i + 1) % poly.size()];
+//         Eigen::Vector2d v1(p2.x() - p1.x(), p2.y() - p1.y());
+//         Eigen::Vector2d v2(p.x() - p1.x(), p.y() - p1.y());
+//         if (v1.x() * v2.y() - v2.x() * v1.y() < 0)
+//         {
+//           return false;
+//         }
+//       }
+//       return true;
+//     };
+
+//     // 计算支撑凸包（模型系 2D）
+//     std::vector<Eigen::Vector2d> hull_2d = computeHull(touch_points_2d);
+
+//     // Keep the actual transformed height of each support sample.  Using one
+//     // global minimum model height for all hull vertices is incorrect for the
+//     // raised front/rear portions of the tracked model.
+//     touch_poly.clear();
+//     for (const auto &p : hull_2d)
+//     {
+//       for (std::size_t k = 0; k < touch_points_2d.size(); ++k)
+//       {
+//         if ((touch_points_2d[k] - p).squaredNorm() < 1e-12)
+//         {
+//           touch_poly.push_back(touch_points[k]);
+//           break;
+//         }
+//       }
+//     }
+
+//     if (touch_poly.size() < 3 || touch_poly.size() != hull_2d.size())
+//     {
+//       return kPoseFailure;
+//     }
+
+//     double hull_area_twice = 0.0;
+//     for (std::size_t i = 0; i < hull_2d.size(); ++i)
+//     {
+//       const auto &p1 = hull_2d[i];
+//       const auto &p2 = hull_2d[(i + 1) % hull_2d.size()];
+//       hull_area_twice += p1.x() * p2.y() - p2.x() * p1.y();
+//     }
+//     if (!std::isfinite(hull_area_twice) ||
+//         std::fabs(hull_area_twice) < 2e-4)
+//     {
+//       return kPoseFailure;
+//     }
+
+//     // 重力方向（世界系向下）
+//     Eigen::Vector3d gravity(0, 0, -1);
+//     // 车辆当前平移位置（世界系）
+//     Eigen::Vector3d T_pos = T_matrix.block<3, 1>(0, 3);
+//     // 从车辆位置沿重力方向作一条直线
+//     Eigen::ParametrizedLine<double, 3> gravity_line(T_pos, gravity);
+//     // Fit the support plane from the actual permitted contact points.
+//     Eigen::Vector3d plane_normal = fitPlane(touch_poly);
+//     if (!plane_normal.allFinite() || plane_normal.norm() < 1e-6 ||
+//         std::fabs(plane_normal.dot(gravity)) < 1e-6)
+//     {
+//       return kPoseFailure;
+//     }
+//     Eigen::Hyperplane<double, 3> contact_plane(plane_normal, touch_poly.front());
+//     // 重力线与接触平面的交点：可理解为“重心沿重力方向投影到接触平面的位置”
+//     Eigen::Vector3d intersection = gravity_line.intersectionPoint(contact_plane);
+//     if (!intersection.allFinite())
+//     {
+//       return kPoseFailure;
+//     }
+
+//     Eigen::Vector3d rotatep1, rotatep2;
+//     bool has_rotation_line = false;
+
+//     // At this point the hull has at least three non-collinear support points.
+//     if (pointInPoly(touch_poly, intersection))
+//     {
+//       is_stable = true;
+//     }
+//     else
+//     {
+//       // Projection is outside the support polygon.  Find the nearest exterior
+//       // hull edge and use it as the candidate rotation axis.
+//       double min_dis = std::numeric_limits<double>::max();
+//       bool found_rotation_edge = false;
+
+//       for (size_t i = 0; i < touch_poly.size(); ++i)
+//       {
+//         const auto &p1 = touch_poly[i];
+//         const auto &p2 = touch_poly[(i + 1) % touch_poly.size()];
+
+//         Eigen::Vector2d v1(p2.x() - p1.x(), p2.y() - p1.y());
+//         Eigen::Vector2d v2(intersection.x() - p1.x(),
+//                            intersection.y() - p1.y());
+//         if (v1.x() * v2.y() - v2.x() * v1.y() >= 0)
+//         {
+//           continue;
+//         }
+
+//         const Eigen::Vector3d p1p2 = p2 - p1;
+//         const double edge_norm_squared = p1p2.squaredNorm();
+//         if (!std::isfinite(edge_norm_squared) || edge_norm_squared < 1e-12)
+//         {
+//           continue;
+//         }
+//         const Eigen::Vector3d p1a = intersection - p1;
+//         const double t = p1a.dot(p1p2) / edge_norm_squared;
+//         const Eigen::Vector3d projection = p1 + t * p1p2;
+//         const double dis = (projection - intersection).norm();
+
+//         if (std::isfinite(dis) && dis < min_dis)
+//         {
+//           min_dis = dis;
+//           rotatep1 = p1;
+//           rotatep2 = p2;
+//           found_rotation_edge = true;
+//         }
+//       }
+
+//       has_rotation_line = found_rotation_edge;
+//     }
+
+//     // 如果稳定了，就进入下一轮循环开头，开头会 return 2
+//     if (is_stable)
+//     {
+//       updateRollPitchFromT(T_matrix);
+//       if (exceedsTiltLimit(T_matrix))
+//       {
+//         stable = 0;
+//         return kPoseUnstable;
+//       }
+//       stable = 1;
+//       return kPoseSuccess;
+//     }
+
+//     if (has_rotation_line)
+//     {
+//       // 旋转轴的方向与参数化直线
+//       const Eigen::Vector3d axis = rotatep2 - rotatep1;
+//       if (!axis.allFinite() || axis.norm() < 1e-6)
+//       {
+//         return kPoseFailure;
+//       }
+//       Eigen::Vector3d direction = axis.normalized();
+//       Eigen::ParametrizedLine<double, 3> rotation_line(rotatep1, direction);
+
+//       // d_theta：要绕旋转轴转的角度（选一个最小可行值）
+//       double d_theta = std::numeric_limits<double>::max();
+
+//       // 为了计算点在旋转轴左/右侧，这里投影到 XY 平面做 2D 判断
+//       Eigen::Vector2d rot_origin(rotation_line.origin().x(), rotation_line.origin().y());
+//       Eigen::Vector2d rot_dir(rotation_line.direction().x(), rotation_line.direction().y());
+//       if (!rot_dir.allFinite() || rot_dir.norm() < 1e-6)
+//       {
+//         return kPoseFailure;
+//       }
+//       Eigen::Vector2d rot_dir_norm = rot_dir.normalized();
+
+//       // 遍历所有非接触点（gap > touch_gap_threshold_），估计需要转多少角
+//       for (int i = 0; i < robot_rows_; ++i)
+//       {
+//         for (int j = 0; j < robot_cols_; ++j)
+//         {
+//           double gap = gap_map(i, j);
+
+//           // NaN 或已经接触的点跳过
+//           if (std::isnan(gap) || gap <= touch_gap_threshold_)
+//           {
+//             continue;
+//           }
+
+//           // 点变换到世界系
+//           Eigen::Vector4d robot_point(vehicle_model.X_(i, j), vehicle_model.Y_(i, j), vehicle_model.Z_(i, j), 1.0);
+//           Eigen::Vector4d global_point = T_matrix * robot_point;
+
+//           // 计算点相对旋转轴起点的 2D 向量
+//           Eigen::Vector2d origin_to_cell(global_point.x() - rot_origin.x(), global_point.y() - rot_origin.y());
+
+//           // 判断点在旋转轴的哪一侧（叉积符号）
+//           // 只对某一侧的点计算 d_theta（避免两边一起压导致矛盾）
+//           if (origin_to_cell.x() * rot_dir_norm.y() - origin_to_cell.y() * rot_dir_norm.x() > 0)
+//           {
+//             // 计算点到旋转轴的垂直距离 distance（在 XY 平面）
+//             Eigen::Vector2d proj_vec = origin_to_cell.dot(rot_dir_norm) * rot_dir_norm;
+//             double distance = (origin_to_cell - proj_vec).norm();
+
+//             // atan2(gap, distance) 是一个“需要转的角度”的几何估计：
+//             // gap 越大、distance 越小 -> 需要更大角度把它压下来
+//             d_theta = std::min(d_theta, std::atan2(gap, distance));
+//           }
+//         }
+//       }
+
+//       // 如果找到了有效 d_theta，就绕 rotation_line 旋转更新 T_matrix
+//       if (d_theta < std::numeric_limits<double>::max())
+//       {
+//         const double max_rotation_step =
+//             fine_max_rotation_step_deg * M_PI / 180.0;
+//         d_theta = std::max(0.0, std::min(d_theta, max_rotation_step));
+
+//         // 下面是一套标准的“绕任意轴旋转”的齐次矩阵构造：
+//         // 1) 平移到轴原点
+//         // 2) 旋转坐标系，让旋转轴对齐到 z 轴
+//         // 3) 绕 z 轴旋转 d_theta
+//         // 4) 旋转回去
+//         // 5) 平移回去
+
+//         Eigen::Matrix4d T1 = Eigen::Matrix4d::Identity();
+//         T1.block<3, 1>(0, 3) = -rotation_line.origin();
+
+//         Eigen::Matrix4d R1 = Eigen::Matrix4d::Identity();
+//         R1.block<3, 3>(0, 0) =
+//             Eigen::Quaterniond().setFromTwoVectors(rotation_line.direction(), Eigen::Vector3d(0, 0, 1)).toRotationMatrix();
+
+//         Eigen::Matrix4d R2 = Eigen::Matrix4d::Identity();
+//         R2.block<3, 3>(0, 0) = Eigen::AngleAxisd(d_theta, Eigen::Vector3d(0, 0, 1)).toRotationMatrix();
+
+//         Eigen::Matrix4d R3 = Eigen::Matrix4d::Identity();
+//         R3.block<3, 3>(0, 0) = R1.block<3, 3>(0, 0).transpose();
+
+//         Eigen::Matrix4d T2 = Eigen::Matrix4d::Identity();
+//         T2.block<3, 1>(0, 3) = rotation_line.origin();
+
+//         Eigen::Matrix4d rotate_with_rotation_line = T2 * R3 * R2 * R1 * T1;
+
+//         // 更新车辆位姿
+//         T_matrix = rotate_with_rotation_line * T_matrix;
+
+//         // 旋转可能引起 xy 平移漂移，这里强制把 xy 拉回 center_pos
+//         T_matrix.block<2, 1>(0, 3) = Eigen::Vector2d(center_pos.x(), center_pos.y());
+
+//         if (!T_matrix.allFinite())
+//         {
+//           return kPoseFailure;
+//         }
+
+//         if (exceedsTiltLimit(T_matrix))
+//         {
+//           stable = 0;
+//           updateRollPitchFromT(T_matrix);
+//           return kPoseUnstable;
+//         }
+//       }
+//       else
+//       {
+//         return kPoseFailure;
+//       }
+//     }
+//     else
+//     {
+//       return kPoseFailure;
+//     }
+
+//     iteration++;
+//   }
+
+//   // -----------------------------------------
+//   // [H1] 从最终旋转矩阵提取 roll/pitch（并转成度）
+//   // -----------------------------------------
+//   updateRollPitchFromT(T_matrix);
+
+//   ROS_INFO("Pose result (vehicle %d) at cell (%.2f, %.2f): roll=%.3f, pitch=%.3f, stable=%d, collision=%d",
+//            vehicle_type, center_pos.x(), center_pos.y(), roll, pitch, is_stable ? 1 : 0, collision ? 1 : 0);
+
+//   stable = is_stable ? 1 : 0;
+
+//   // -----------------------------------------
+//   // [H2] 返回码约定
+//   // -----------------------------------------
+//   // 2 = 成功且稳定
+//   // 1 = 碰撞（上面已经提前 return 1）
+//   // 3 = 姿态超过物理倾角限制
+//   // 0 = 未稳定或失败
+//   return is_stable ? kPoseSuccess : kPoseFailure;
+// }
+
+// bool Mapping::checkWheel(int vehicle_type, int i, int j) const
+// {
+//   // false：车轮/履带接触区域
+//   // true：底盘区域，需要检查碰撞
+//   if (vehicle_type == 1)
+//   {
+//     static const std::array<int, 4> wheel_rows = {0, 1, 7, 8};
+
+//     static const std::array<int, 5> wheel_cols = {1, 2, 3, 8, 9};
+
+//     const bool row_matches = std::find(wheel_rows.begin(), wheel_rows.end(), i) != wheel_rows.end();
+
+//     const bool col_matches = std::find(wheel_cols.begin(), wheel_cols.end(), j) != wheel_cols.end();
+
+//     return !(row_matches && col_matches);
+//   }
+
+//   if (vehicle_type == 2)
+//   {
+//     static const std::array<int, 4> track_rows = {0, 1, 7, 8};
+
+//     const bool is_track = std::find(track_rows.begin(), track_rows.end(), i) != track_rows.end();
+
+//     return !is_track;
+//   }
+
+//   return true;
+// }
 
 Eigen::Vector3d Mapping::fitPlane(const std::vector<Eigen::Vector3d> &points)
 {
