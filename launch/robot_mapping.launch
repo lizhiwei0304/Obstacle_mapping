@@ -22,7 +22,7 @@
     <arg name="startup_hole_max_cells" default="200" />
     <arg name="startup_hole_min_boundary_cells" default="12" />
     <arg name="startup_hole_max_attempts" default="30" />
-    
+
     <arg name="slope_threshold" default="0.3" />
     <arg name="roughness_threshold" default="0.04" />
     <arg name="step_threshold" default="0.4" />
@@ -41,6 +41,11 @@
     <arg name="touch_gap_threshold" default="0.05" />
     <arg name="collision_gap_threshold" default="0.1" />
     <arg name="max_iterations" default="50" />
+
+    <arg name="fine_min_support_points" default="3" />
+    <arg name="fine_max_rotation_step_deg" default="5.0" />
+    <arg name="fine_max_pose_tilt_deg" default="60.0" />
+    <arg name="fine_heading_samples" default="8" />
 
     <arg name="enable_fine_traversability" default="true" />
     <arg name="enable_incremental_geom" default="true" />
@@ -130,6 +135,10 @@
         <param name="touch_gap_threshold" value="$(arg touch_gap_threshold)" />
         <param name="collision_gap_threshold" value="$(arg collision_gap_threshold)" />
         <param name="max_iterations" value="$(arg max_iterations)" />
+        <param name="fine_min_support_points" value="$(arg fine_min_support_points)" />
+        <param name="fine_max_rotation_step_deg" value="$(arg fine_max_rotation_step_deg)" />
+        <param name="fine_max_pose_tilt_deg" value="$(arg fine_max_pose_tilt_deg)" />
+        <param name="fine_heading_samples" value="$(arg fine_heading_samples)" />
 
         <!-- Fine-grained traversability computation control -->
         <param name="enable_fine_traversability" value="$(arg enable_fine_traversability)" />

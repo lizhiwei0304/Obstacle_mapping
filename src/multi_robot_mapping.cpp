@@ -1,6 +1,6 @@
 /**
  * @description: Multi-robot mapping node with conditional startup blind-spot completion
- * @filename: multi_robot_mapping_with_csv.cpp
+ * @filename: multi_robot_mapping.cpp
  * @author: wangxurui
  * @date: 2026-01-28
  **/
@@ -18,9 +18,16 @@
 #include <stdexcept>
 #include <cmath>
 #include <iomanip>
+#include <fstream>
+#include <sstream>
 
 namespace
 {
+  constexpr int kPoseFailure = 0;
+  constexpr int kPoseCollision = 1;
+  constexpr int kPoseSuccess = 2;
+  constexpr int kPoseUnstable = 3;
+
   enum class StartupHoleFillResult
   {
     kNoHole,
@@ -531,16 +538,6 @@ void Mapping::loadParameters()
   ROS_INFO("  - Fine slope range: [%.2f, %.2f]", fine_slope_min_, fine_slope_max_);
   ROS_INFO("  - Wheeled model path: %s", wheeled_model_path_.c_str());
   ROS_INFO("  - Tracked model path: %s", tracked_model_path_.c_str());
-
-  ROS_INFO("  - Viewpoint grid:");
-  ROS_INFO("    * number (cells): x=%d, y=%d, z=%d",
-           viewpoint_number_x_, viewpoint_number_y_, viewpoint_number_z_);
-  ROS_INFO("    * resolution (m): x=%.4f, y=%.4f, z=%.4f",
-           viewpoint_resolution_x_, viewpoint_resolution_y_, viewpoint_resolution_z_);
-  ROS_INFO("    * size (m): x=%.3f, y=%.3f, z=%.3f",
-           viewpoint_grid_size_x_, viewpoint_grid_size_y_, viewpoint_grid_size_z_);
-  ROS_INFO("    * total cells: %d",
-           viewpoint_number_x_ * viewpoint_number_y_ * viewpoint_number_z_);
 }
 
 // ==================== Vehicle Model Loading ====================
@@ -580,29 +577,81 @@ bool Mapping::loadModelFromCsv(const std::string &path, HeightGrid &model_storag
   std::vector<std::vector<double>> data;
   std::string line;
 
-  while (std::getline(file, line))
+  try
   {
-    std::stringstream ss(line);
-    std::string value;
-    std::vector<double> row;
-
-    while (std::getline(ss, value, ','))
+    while (std::getline(file, line))
     {
-      row.push_back(std::stod(value));
+      if (line.find_first_not_of(" \t\r\n") == std::string::npos)
+      {
+        continue;
+      }
+
+      std::stringstream ss(line);
+      std::string value;
+      std::vector<double> row;
+
+      while (std::getline(ss, value, ','))
+      {
+        const std::size_t first = value.find_first_not_of(" \t\r\n");
+        const std::size_t last = value.find_last_not_of(" \t\r\n");
+        if (first == std::string::npos)
+        {
+          ROS_ERROR("Empty vehicle model value in %s", path.c_str());
+          return false;
+        }
+        const std::string token = value.substr(first, last - first + 1);
+        std::size_t parsed = 0;
+        const double parsed_value = std::stod(token, &parsed);
+        if (parsed != token.size() || !std::isfinite(parsed_value))
+        {
+          ROS_ERROR("Invalid vehicle model value '%s' in %s",
+                    token.c_str(), path.c_str());
+          return false;
+        }
+        row.push_back(parsed_value);
+      }
+      data.push_back(std::move(row));
     }
-    data.push_back(row);
+  }
+  catch (const std::exception &e)
+  {
+    ROS_ERROR("Failed to parse vehicle model %s: %s",
+              path.c_str(), e.what());
+    return false;
   }
 
   file.close();
+
+  if (data.size() != static_cast<std::size_t>(robot_rows_))
+  {
+    ROS_ERROR("Vehicle model %s must contain exactly %d rows, but got %zu",
+              path.c_str(), robot_rows_, data.size());
+    return false;
+  }
+
+  for (int i = 0; i < robot_rows_; ++i)
+  {
+    if (data[i].size() != static_cast<std::size_t>(robot_cols_))
+    {
+      ROS_ERROR("Vehicle model %s row %d must contain exactly %d columns, but got %zu",
+                path.c_str(), i, robot_cols_, data[i].size());
+      return false;
+    }
+  }
 
   model_storage.X_.resize(robot_rows_, robot_cols_);
   model_storage.Y_.resize(robot_rows_, robot_cols_);
   model_storage.Z_.resize(robot_rows_, robot_cols_);
   model_storage.Gap_.resize(robot_rows_, robot_cols_);
 
-  for (int i = 0; i < robot_rows_ && i < static_cast<int>(data.size()); ++i)
+  model_storage.X_.setZero();
+  model_storage.Y_.setZero();
+  model_storage.Z_.setZero();
+  model_storage.Gap_.setZero();
+
+  for (int i = 0; i < robot_rows_; ++i)
   {
-    for (int j = 0; j < robot_cols_ && j < static_cast<int>(data[i].size()); ++j)
+    for (int j = 0; j < robot_cols_; ++j)
     {
       double resolution = robot_model_resolution_;
       model_storage.X_(i, j) = (i * resolution + resolution / 2.0) - (robot_rows_ * resolution / 2.0);
@@ -616,55 +665,6 @@ bool Mapping::loadModelFromCsv(const std::string &path, HeightGrid &model_storag
            robot_rows_, robot_cols_, robot_model_resolution_);
   return true;
 }
-
-// void Mapping::originCallback(const geometry_msgs::PointStampedConstPtr &msg)
-// {
-//   std::lock_guard<std::mutex> lock(origin_mutex_);
-
-//   latest_origin_.x() = msg->point.x;
-//   latest_origin_.y() = msg->point.y;
-//   latest_origin_.z() = msg->point.z;
-//   latest_origin_stamp_ = msg->header.stamp;
-
-//   has_origin_.store(true, std::memory_order_release);
-
-//   if (debug_mode_)
-//   {
-//     ROS_DEBUG("Received origin: [%.3f %.3f %.3f] stamp=%.3f",
-//               latest_origin_.x(), latest_origin_.y(), latest_origin_.z(),
-//               latest_origin_stamp_.toSec());
-//   }
-// }
-
-// void Mapping::viewpointVisCloudCallback(const sensor_msgs::PointCloud2ConstPtr &msg)
-// {
-//   // 转成 PCL（按你的需求：PointXYZI）
-//   pcl::PointCloud<pcl::PointXYZI>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZI>());
-//   try
-//   {
-//     pcl::fromROSMsg(*msg, *cloud);
-//   }
-//   catch (const std::exception &e)
-//   {
-//     ROS_WARN_STREAM("viewpointVisCloudCallback: fromROSMsg failed: " << e.what());
-//     return;
-//   }
-
-//   // 防御：去掉 NaN/Inf（可选但推荐）
-//   std::vector<int> idx;
-//   pcl::removeNaNFromPointCloud(*cloud, *cloud, idx);
-
-//   // 缓存最新一帧（线程安全）
-//   {
-//     std::lock_guard<std::mutex> lk(viewpoint_vis_mutex_);
-//     *latest_viewpoint_vis_cloud_ = *cloud; // 深拷贝到缓存
-//     latest_viewpoint_vis_stamp_ = msg->header.stamp;
-//     latest_viewpoint_vis_frame_id_ = msg->header.frame_id;
-//     has_viewpoint_vis_.store(true, std::memory_order_release);
-//   }
-
-//   ROS_INFO("Received synchronized point cloud.");
-// }
 
 void Mapping::synchronizedCloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr &cloud_msg,
                                             const nav_msgs::OdometryConstPtr &odom_msg)
@@ -820,7 +820,6 @@ void Mapping::processingThreadFunc()
       // wait(lock, predicate) 的语义：
       // - 如果 predicate 一开始就为 true，则不会睡眠，直接返回
       // - 否则释放锁并睡眠，直到被 notify 唤醒（或假唤醒），再重新加锁并检查 predicate
-      //
       // 这里 predicate 是：队列非空 或者 should_exit_ 为 true
       // 目的：有任务就处理；收到退出信号也要能醒来退出
       processing_cv_.wait(lock, [this]()
@@ -1042,11 +1041,11 @@ void Mapping::processPointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud
   ROS_INFO("BGK mapping: %.4f seconds", time2 - time1);
 
   // -----------------------
-  // Step 2.5: Conditional startup blind-spot completion
+  // 步骤 2.5：条件性启动盲区补全
   // -----------------------
-  // A sparse lidar can leave a closed unknown component around the initial
-  // pose.  Detect and fill only that component.  If the initial cell is
-  // already valid, or the unknown region is open/too large, no value is added.
+  // 稀疏激光雷达可能会在初始位姿周围留下一个封闭的未知区域（连通域）。
+  // 检测并仅填充该区域。如果初始栅格（cell）已经是有效值，
+  // 或者未知区域是开放的/范围过大，则不进行任何处理。
   static bool startup_fill_configured = false;
   static bool startup_fill_enabled = true;
   static bool startup_position_recorded = false;
@@ -1758,6 +1757,11 @@ bool Mapping::areaSingleNormalComputation(const grid_map::Index &index)
   // 对称矩阵 cov 的特征分解：cov = V Λ V^T
   // SelfAdjointEigenSolver 更快更稳定（因为 cov 对称）
   Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver(cov);
+  if (solver.info() != Eigen::Success ||
+      !solver.eigenvalues().allFinite())
+  {
+    return false;
+  }
 
   // 这里你用 solver.eigenvalues()(1) > 1e-8 做一个“退化”判断：
   // - 如果邻域点几乎共线/退化（协方差某些方向很小），法向估计可能不稳定
@@ -2211,7 +2215,7 @@ void Mapping::finegrained_traversability_mapping()
           csv_stream
               << "record_type,stamp_sec,cycle,vehicle_id,vehicle,"
               << "cell_x,cell_y,slope,roughness,step,coarse_cost,"
-              << "n_points,interpolated,pose_status,status,roll_deg,"
+              << "n_points,interpolated,heading_deg,pose_status,status,roll_deg,"
               << "pitch_deg,contact_points,stable,final_cost,"
               << "success_count,collision_count,failure_count,skipped_cells\n";
         }
@@ -2238,6 +2242,7 @@ void Mapping::finegrained_traversability_mapping()
                              float coarse_value,
                              float n_points_value,
                              float interpolated_value,
+                             double heading_deg,
                              int pose_status,
                              const char *status,
                              double roll_deg,
@@ -2257,6 +2262,7 @@ void Mapping::finegrained_traversability_mapping()
                << slope_value << ',' << roughness_value << ','
                << step_value << ',' << coarse_value << ','
                << n_points_value << ',' << interpolated_value << ','
+               << heading_deg << ','
                << pose_status << ',' << status << ','
                << roll_deg << ',' << pitch_deg << ','
                << contact_points << ',' << stable << ','
@@ -2282,9 +2288,18 @@ void Mapping::finegrained_traversability_mapping()
                            current_orientation.z(), current_orientation.w());
   double yaw_angle = tf::getYaw(q_vehicle); // 车体航向角（弧度）
 
-  // 只绕 Z 轴旋转的旋转矩阵（yaw）
-  Eigen::Vector3d z_axis(0, 0, 1);
-  Eigen::Matrix3d yaw_rotation = Eigen::AngleAxisd(yaw_angle, z_axis).toRotationMatrix();
+  static bool fine_pose_configured = false;
+  static int fine_heading_samples = 8;
+  if (!fine_pose_configured)
+  {
+    pnh_.param<int>("fine_heading_samples", fine_heading_samples, 8);
+    fine_heading_samples = std::max(1, fine_heading_samples);
+    fine_pose_configured = true;
+    ROS_INFO("Fine traversability heading samples: %d",
+             fine_heading_samples);
+  }
+
+  const Eigen::Vector3d z_axis(0.0, 0.0, 1.0);
 
   int count_skipped = 0;
 
@@ -2305,29 +2320,48 @@ void Mapping::finegrained_traversability_mapping()
     }
     critical_layer(idx(0), idx(1)) = 0.0f;
 
-    // ---------------------------------------------------
-    // [6.1] slope 过滤：只对“足够陡/值得细算”的区域评估
-    // ---------------------------------------------------
-    // fine_slope_min_：你人为设定的阈值（通常是归一化 slope 的下限）
-    // 低于这个阈值认为地形太平坦，不需要做 expensive 的车辆姿态预测
-    float slope_val = slope_layer(idx(0), idx(1));
-    if (std::isnan(slope_val) || slope_val < fine_slope_min_)
-    {
-      count_skipped++;
-      continue;
-    }
-
-    // 获取这个 idx 对应的连续坐标 pos（这里实际没被后续使用，可能是遗留代码）
-    grid_map::Position pos;
-    if (!height_map_.getPosition(idx, pos))
-    {
-      continue;
-    }
-
+    const float slope_val = slope_layer(idx(0), idx(1));
     const float roughness_val = roughness_layer(idx(0), idx(1));
     const float step_val = step_layer(idx(0), idx(1));
     const float n_points_val = n_points_layer(idx(0), idx(1));
     const float interpolated_val = interpolated_layer(idx(0), idx(1));
+
+    // Unknown or incomplete coarse cells must remain unknown.  In particular,
+    // do not turn a missing step/coarse value into a valid platform cost.
+    if (!std::isfinite(slope_val) ||
+        !std::isfinite(roughness_val) ||
+        !std::isfinite(step_val) ||
+        !std::isfinite(coarse_value))
+    {
+      ++count_skipped;
+      continue;
+    }
+
+    // A cell is refined when at least one coarse indicator lies in its
+    // configured critical band.  This makes every fine_*_min/max launch
+    // parameter effective while leaving clearly non-critical cells unchanged.
+    const bool traversability_critical =
+        coarse_value >= fine_trav_min_ &&
+        coarse_value <= fine_trav_max_;
+    const bool slope_critical =
+        slope_val >= fine_slope_min_ &&
+        slope_val <= fine_slope_max_;
+    const bool roughness_critical =
+        roughness_val >= fine_roughness_min_ &&
+        roughness_val <= fine_roughness_max_;
+
+    if (!(traversability_critical || slope_critical || roughness_critical))
+    {
+      ++count_skipped;
+      continue;
+    }
+
+    grid_map::Position pos;
+    if (!height_map_.getPosition(idx, pos))
+    {
+      ++count_skipped;
+      continue;
+    }
 
     // 标记该 cell 被纳入了 fine 检查（critical=1）
     critical_layer(idx(0), idx(1)) = 1.0f;
@@ -2337,79 +2371,156 @@ void Mapping::finegrained_traversability_mapping()
     // ===================================================
     for (auto &vehicle : vehicles)
     {
-      double roll = 0.0;
-      double pitch = 0.0;
-      int contact_points = 0;
-      int is_stable = 1; // 1稳定，0不稳定（由 predictRobotPose 写回）
+      bool has_success = false;
+      bool has_unstable = false;
+      int collision_headings = 0;
 
-      // -------------------------------------------------
-      // predictRobotPose 的语义（从用法推断）：
-      // 输入：cell idx、车辆 yaw_rotation、车辆模型（足迹/离散采样点）、车型id
-      // 输出：roll/pitch、contact_points、is_stable、返回 pose_status
-      //
-      // pose_status 你这里使用约定：
-      //   1 => collision / 无法放置（直接 cost=1）
-      //   2 => 成功预测并可用
-      // 其它 => 失败（跳过，保留 coarse 值）
-      // -------------------------------------------------
-      int pose_status = predictRobotPose(idx, roll, pitch, contact_points, is_stable,
-                                         yaw_rotation, *vehicle.model, vehicle.id);
+      float best_cost = 1.0f;
+      double best_roll = 0.0;
+      double best_pitch = 0.0;
+      double best_heading_deg = 0.0;
+      int best_contact_points = 0;
+      int best_stable = 0;
 
-      // [A] 碰撞：直接不可通行
-      if (pose_status == 1)
-      {
-        vehicle.count_collision++;
-        (*(vehicle.layer))(idx(0), idx(1)) = 1.0f;
-        writeCellRecord(vehicle, pos, slope_val, roughness_val, step_val,
-                        coarse_value, n_points_val, interpolated_val,
-                        pose_status, "collision", roll, pitch,
-                        contact_points, is_stable, 1.0f);
-        continue;
-      }
+      double diagnostic_roll = 0.0;
+      double diagnostic_pitch = 0.0;
+      double diagnostic_heading_deg = 0.0;
+      int diagnostic_contacts = 0;
+      int diagnostic_stable = 0;
+      int diagnostic_status = kPoseFailure;
 
-      // [B] 预测失败：不更新该 cell（维持初始化时拷贝的 coarse traversability）
-      if (pose_status != 2)
-      {
-        vehicle.count_failure++;
-        writeCellRecord(vehicle, pos, slope_val, roughness_val, step_val,
-                        coarse_value, n_points_val, interpolated_val,
-                        pose_status, "failure_keep_coarse", roll, pitch,
-                        contact_points, is_stable, coarse_value);
-        continue;
-      }
-
-      // [C] 成功：用 roll/pitch 计算 fine 代价
-      vehicle.count_success++;
-
-      // -------------------------------------------------
-      // 归一化：roll/pitch 超过阈值就趋向 1.0
-      // 注意：变量名 fine_roll_threshold_deg_ 暗示阈值单位是“度”
-      //       但 roll/pitch 是不是度取决于 predictRobotPose 的实现
-      //       如果 predictRobotPose 输出是“弧度”，这里就会单位错配！
-      // -------------------------------------------------
       const double roll_norm = std::max(1e-3, fine_roll_threshold_deg_);
       const double pitch_norm = std::max(1e-3, fine_pitch_threshold_deg_);
 
-      double roll_cost = std::min(1.0, std::fabs(roll) / roll_norm);
-      double pitch_cost = std::min(1.0, std::fabs(pitch) / pitch_norm);
-
-      // 细粒度代价：roll 与 pitch 代价的均值
-      float fine_traversability = (roll_cost + pitch_cost) / 2.0f;
-
-      // 如果判定不稳定（比如支撑点不足、翻车风险等），直接置为不可通行
-      if (is_stable == 0)
+      for (int heading_index = 0;
+           heading_index < fine_heading_samples;
+           ++heading_index)
       {
-        fine_traversability = 1.0f;
+        // A single sample retains the measured vehicle yaw for backward
+        // compatibility.  Multiple samples use fixed global headings so the
+        // stored global traversability layer does not change when the robot
+        // itself turns.
+        const double heading =
+            fine_heading_samples == 1
+                ? yaw_angle
+                : (2.0 * M_PI * static_cast<double>(heading_index) /
+                   static_cast<double>(fine_heading_samples));
+        const double heading_deg = heading * 180.0 / M_PI;
+        const Eigen::Matrix3d heading_rotation =
+            Eigen::AngleAxisd(heading, z_axis).toRotationMatrix();
+
+        double roll = 0.0;
+        double pitch = 0.0;
+        int contact_points = 0;
+        int is_stable = 0;
+        const int pose_status = predictRobotPose(
+            idx, roll, pitch, contact_points, is_stable,
+            heading_rotation, *vehicle.model, vehicle.id);
+
+        if (pose_status == kPoseSuccess && is_stable != 0 &&
+            std::isfinite(roll) && std::isfinite(pitch))
+        {
+          const double roll_cost =
+              std::min(1.0, std::fabs(roll) / roll_norm);
+          const double pitch_cost =
+              std::min(1.0, std::fabs(pitch) / pitch_norm);
+          const float fine_cost = static_cast<float>(
+              0.5 * (roll_cost + pitch_cost));
+
+          if (!has_success || fine_cost < best_cost)
+          {
+            has_success = true;
+            best_cost = fine_cost;
+            best_roll = roll;
+            best_pitch = pitch;
+            best_heading_deg = heading_deg;
+            best_contact_points = contact_points;
+            best_stable = is_stable;
+          }
+        }
+        else if (pose_status == kPoseCollision)
+        {
+          ++collision_headings;
+          if (!has_unstable)
+          {
+            diagnostic_roll = roll;
+            diagnostic_pitch = pitch;
+            diagnostic_heading_deg = heading_deg;
+            diagnostic_contacts = contact_points;
+            diagnostic_stable = is_stable;
+            diagnostic_status = pose_status;
+          }
+        }
+        else if (pose_status == kPoseUnstable)
+        {
+          has_unstable = true;
+          diagnostic_roll = roll;
+          diagnostic_pitch = pitch;
+          diagnostic_heading_deg = heading_deg;
+          diagnostic_contacts = contact_points;
+          diagnostic_stable = is_stable;
+          diagnostic_status = pose_status;
+        }
+        else
+        {
+          // A failed heading is kept as diagnostic state.  The cell retains
+          // its coarse value only when no sampled heading succeeds and no
+          // sampled heading proves it unstable.
+          if (!has_unstable)
+          {
+            diagnostic_roll = roll;
+            diagnostic_pitch = pitch;
+            diagnostic_heading_deg = heading_deg;
+            diagnostic_contacts = contact_points;
+            diagnostic_stable = is_stable;
+            diagnostic_status = kPoseFailure;
+          }
+        }
       }
 
-      // 精细校核成功后，直接覆盖该车型对应的粗粒度默认值。
-      (*(vehicle.layer))(idx(0), idx(1)) = fine_traversability;
-      writeCellRecord(vehicle, pos, slope_val, roughness_val, step_val,
-                      coarse_value, n_points_val, interpolated_val,
-                      pose_status,
-                      is_stable == 0 ? "success_unstable" : "success",
-                      roll, pitch, contact_points, is_stable,
-                      fine_traversability);
+      if (has_success)
+      {
+        ++vehicle.count_success;
+        // Per the selected method, a valid refined cost directly replaces the
+        // coarse default for this platform-specific layer.
+        (*(vehicle.layer))(idx(0), idx(1)) = best_cost;
+        writeCellRecord(vehicle, pos, slope_val, roughness_val, step_val,
+                        coarse_value, n_points_val, interpolated_val,
+                        best_heading_deg, kPoseSuccess, "success",
+                        best_roll, best_pitch, best_contact_points,
+                        best_stable, best_cost);
+      }
+      else if (collision_headings == fine_heading_samples)
+      {
+        ++vehicle.count_collision;
+        (*(vehicle.layer))(idx(0), idx(1)) = 1.0f;
+        writeCellRecord(vehicle, pos, slope_val, roughness_val, step_val,
+                        coarse_value, n_points_val, interpolated_val,
+                        diagnostic_heading_deg, kPoseCollision,
+                        "collision_all_headings", diagnostic_roll,
+                        diagnostic_pitch, diagnostic_contacts,
+                        diagnostic_stable, 1.0f);
+      }
+      else if (has_unstable)
+      {
+        ++vehicle.count_failure;
+        (*(vehicle.layer))(idx(0), idx(1)) = 1.0f;
+        writeCellRecord(vehicle, pos, slope_val, roughness_val, step_val,
+                        coarse_value, n_points_val, interpolated_val,
+                        diagnostic_heading_deg, kPoseUnstable, "unstable",
+                        diagnostic_roll, diagnostic_pitch,
+                        diagnostic_contacts, 0, 1.0f);
+      }
+      else
+      {
+        ++vehicle.count_failure;
+        writeCellRecord(vehicle, pos, slope_val, roughness_val, step_val,
+                        coarse_value, n_points_val, interpolated_val,
+                        diagnostic_heading_deg, diagnostic_status,
+                        "failure_keep_coarse", diagnostic_roll,
+                        diagnostic_pitch, diagnostic_contacts,
+                        diagnostic_stable, coarse_value);
+      }
     }
   }
 
@@ -2427,8 +2538,8 @@ void Mapping::finegrained_traversability_mapping()
     {
       csv_stream << "summary," << csv_stamp << ',' << csv_cycle << ','
                  << vehicle.id << ',' << vehicle.name;
-      // Fields 6--20 are cell-level values and are not applicable here.
-      for (int field = 6; field <= 20; ++field)
+      // Fields 6--21 are cell-level values and are not applicable here.
+      for (int field = 6; field <= 21; ++field)
       {
         csv_stream << ",nan";
       }
@@ -2455,6 +2566,31 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx, double &roll, d
                               int &contact_points, int &stable, const Eigen::Matrix3d &yaw_rotation,
                               const HeightGrid &vehicle_model, int vehicle_type)
 {
+  roll = 0.0;
+  pitch = 0.0;
+  contact_points = 0;
+  stable = 0;
+
+  static bool pose_limits_configured = false;
+  static int fine_min_support_points = 3;
+  static double fine_max_rotation_step_deg = 5.0;
+  static double fine_max_pose_tilt_deg = 60.0;
+  if (!pose_limits_configured)
+  {
+    pnh_.param<int>("fine_min_support_points",
+                    fine_min_support_points, 3);
+    pnh_.param<double>("fine_max_rotation_step_deg",
+                       fine_max_rotation_step_deg, 5.0);
+    pnh_.param<double>("fine_max_pose_tilt_deg",
+                       fine_max_pose_tilt_deg, 60.0);
+    fine_min_support_points = std::max(3, fine_min_support_points);
+    fine_max_rotation_step_deg = std::max(
+        0.1, std::min(30.0, fine_max_rotation_step_deg));
+    fine_max_pose_tilt_deg = std::max(
+        1.0, std::min(89.0, fine_max_pose_tilt_deg));
+    pose_limits_configured = true;
+  }
+
   // -----------------------------------------
   // [A1] 将中心 cell 索引转成连续坐标 (x,y)
   // -----------------------------------------
@@ -2462,7 +2598,7 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx, double &roll, d
   grid_map::Position center_pos;
   if (!height_map_.getPosition(center_idx, center_pos))
   {
-    return 0; // Failed
+    return kPoseFailure;
   }
 
   // -----------------------------------------
@@ -2482,7 +2618,7 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx, double &roll, d
 
   if (!success)
   {
-    return 0; // Failed
+    return kPoseFailure;
   }
 
   // -----------------------------------------
@@ -2507,7 +2643,7 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx, double &roll, d
   // 点太少无法拟合平面
   if (terrain_points.size() < 4)
   {
-    return 0; // Failed
+    return kPoseFailure;
   }
 
   // -----------------------------------------
@@ -2542,7 +2678,9 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx, double &roll, d
   // terrain_rotation 是“坡面倾斜”旋转（把 z 对齐到 normal）
   // 注意：矩阵乘法顺序很重要
   // R = yaw * terrain ：表示先对齐坡面，再施加车辆航向
-  Eigen::Matrix3d R_matrix = yaw_rotation * terrain_rotation;
+  // Apply heading first, then tilt the vehicle so its local Z axis remains
+  // aligned with the world-frame terrain normal.
+  Eigen::Matrix3d R_matrix = terrain_rotation * yaw_rotation;
 
   // -----------------------------------------
   // [B5] 构造齐次变换 T：初始把车辆模型放在 (center_x, center_y, z=0) 上
@@ -2557,8 +2695,6 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx, double &roll, d
   std::vector<Eigen::Vector3d> touch_points;
   std::vector<Eigen::Vector3d> touch_poly;
   bool is_stable = false;
-  double local_min_z = vehicle_model.Z_.minCoeff();
-
   contact_points = 0;
   bool collision = false;
 
@@ -2576,6 +2712,22 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx, double &roll, d
     pitch = std::asin(s) * 180.0 / M_PI;
   };
 
+  auto exceedsTiltLimit = [&](const Eigen::Matrix4d &T)
+  {
+    if (!T.allFinite())
+    {
+      return true;
+    }
+    const Eigen::Vector3d body_up = T.block<3, 3>(0, 0).col(2);
+    if (!body_up.allFinite() || body_up.norm() < 1e-6)
+    {
+      return true;
+    }
+    const double max_tilt_rad =
+        fine_max_pose_tilt_deg * M_PI / 180.0;
+    return body_up.normalized().z() < std::cos(max_tilt_rad);
+  };
+
   // ==================== Iterative Rotation ====================
   int iteration = 0;
   while (iteration < max_iterations_)
@@ -2584,14 +2736,19 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx, double &roll, d
     if (collision)
     {
       stable = 0;
-      return 1;
+      return kPoseCollision;
     }
 
     if (is_stable)
     {
-      stable = 1;
       updateRollPitchFromT(T_matrix);
-      return 2;
+      if (exceedsTiltLimit(T_matrix))
+      {
+        stable = 0;
+        return kPoseUnstable;
+      }
+      stable = 1;
+      return kPoseSuccess;
     }
 
     // -----------------------------------------
@@ -2661,16 +2818,21 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx, double &roll, d
             double gap = global_point.z() - terrain_z;
             gap_map(i, j) = gap;
 
-            if (gap < touch_gap_threshold_)
+            const bool collision_sensitive =
+                checkWheel(vehicle_type, i, j);
+
+            // Only wheel/track cells are support contacts.  Chassis cells are
+            // evaluated independently against the configured body clearance.
+            if (!collision_sensitive && gap < touch_gap_threshold_)
             {
               contact_points++;
               touch_points.push_back(Eigen::Vector3d(global_point.x(), global_point.y(), global_point.z()));
               touch_points_2d.push_back(Eigen::Vector2d(vehicle_model.X_(i, j), vehicle_model.Y_(i, j)));
+            }
 
-              if (checkWheel(vehicle_type, i, j) && gap < collision_gap_threshold_)
-              {
-                collision = true;
-              }
+            if (collision_sensitive && gap < collision_gap_threshold_)
+            {
+              collision = true;
             }
           }
         }
@@ -2680,15 +2842,16 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx, double &roll, d
     if (collision)
     {
       stable = 0;
-      return 1;
+      return kPoseCollision;
     }
 
-    // 没有任何接触点：说明模型还没“落到地形上”或地形缺失
-    // 直接进入下一次迭代
-    if (touch_points.empty())
+    // A valid support polygon requires at least three non-collinear permitted
+    // wheel/track contacts.  One- or two-point support must never be reported
+    // as a stable vehicle pose.
+    if (touch_points.size() <
+        static_cast<std::size_t>(fine_min_support_points))
     {
-      iteration++;
-      continue;
+      return kPoseFailure;
     }
 
     // Step 4: 支撑多边形 + 重力线投影
@@ -2701,7 +2864,7 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx, double &roll, d
     // computeHull: 输入一堆 2D 点，输出凸包点序列（逆/顺时针）
     auto computeHull = [&](std::vector<Eigen::Vector2d> pts)
     {
-      if (pts.size() <= 3)
+      if (pts.size() <= 1)
       {
         return pts;
       }
@@ -2712,6 +2875,19 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx, double &roll, d
                     return a.y() < b.y();
                 }
                 return a.x() < b.x(); });
+
+      pts.erase(std::unique(pts.begin(), pts.end(),
+                            [](const Eigen::Vector2d &a,
+                               const Eigen::Vector2d &b)
+                            {
+                              return (a - b).squaredNorm() < 1e-12;
+                            }),
+                pts.end());
+
+      if (pts.size() <= 1)
+      {
+        return pts;
+      }
 
       std::vector<Eigen::Vector2d> hull;
       for (const auto &p : pts)
@@ -2759,18 +2935,38 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx, double &roll, d
     // 计算支撑凸包（模型系 2D）
     std::vector<Eigen::Vector2d> hull_2d = computeHull(touch_points_2d);
 
-    // 将凸包点提升到 3D：z 用模型底面最小 z（local_min_z），再用 T_matrix 变换到世界系
+    // Keep the actual transformed height of each support sample.  Using one
+    // global minimum model height for all hull vertices is incorrect for the
+    // raised front/rear portions of the tracked model.
     touch_poly.clear();
     for (const auto &p : hull_2d)
     {
-      Eigen::Vector4d p4(p.x(), p.y(), local_min_z, 1.0);
-      touch_poly.push_back((T_matrix * p4).block<3, 1>(0, 0));
+      for (std::size_t k = 0; k < touch_points_2d.size(); ++k)
+      {
+        if ((touch_points_2d[k] - p).squaredNorm() < 1e-12)
+        {
+          touch_poly.push_back(touch_points[k]);
+          break;
+        }
+      }
     }
 
-    if (touch_poly.empty())
+    if (touch_poly.size() < 3 || touch_poly.size() != hull_2d.size())
     {
-      iteration++;
-      continue;
+      return kPoseFailure;
+    }
+
+    double hull_area_twice = 0.0;
+    for (std::size_t i = 0; i < hull_2d.size(); ++i)
+    {
+      const auto &p1 = hull_2d[i];
+      const auto &p2 = hull_2d[(i + 1) % hull_2d.size()];
+      hull_area_twice += p1.x() * p2.y() - p2.x() * p1.y();
+    }
+    if (!std::isfinite(hull_area_twice) ||
+        std::fabs(hull_area_twice) < 2e-4)
+    {
+      return kPoseFailure;
     }
 
     // 重力方向（世界系向下）
@@ -2779,112 +2975,94 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx, double &roll, d
     Eigen::Vector3d T_pos = T_matrix.block<3, 1>(0, 3);
     // 从车辆位置沿重力方向作一条直线
     Eigen::ParametrizedLine<double, 3> gravity_line(T_pos, gravity);
-    // contact_plane：接触平面，法向取车辆当前姿态的 z 轴（R 的第三列）
-    Eigen::Vector3d plane_normal = T_matrix.block<3, 3>(0, 0).col(2);
+    // Fit the support plane from the actual permitted contact points.
+    Eigen::Vector3d plane_normal = fitPlane(touch_poly);
+    if (!plane_normal.allFinite() || plane_normal.norm() < 1e-6 ||
+        std::fabs(plane_normal.dot(gravity)) < 1e-6)
+    {
+      return kPoseFailure;
+    }
     Eigen::Hyperplane<double, 3> contact_plane(plane_normal, touch_poly.front());
     // 重力线与接触平面的交点：可理解为“重心沿重力方向投影到接触平面的位置”
     Eigen::Vector3d intersection = gravity_line.intersectionPoint(contact_plane);
+    if (!intersection.allFinite())
+    {
+      return kPoseFailure;
+    }
 
     Eigen::Vector3d rotatep1, rotatep2;
     bool has_rotation_line = false;
 
-    if (touch_poly.size() == 1)
+    // At this point the hull has at least three non-collinear support points.
+    if (pointInPoly(touch_poly, intersection))
     {
-      // 只有一个支撑点：投影若就在支撑点上 -> 稳定
-      if ((touch_poly.front() - intersection).norm() < 1e-6)
-      {
-        is_stable = true;
-      }
-      else
-      {
-        // 不稳定：构造一个“旋转轴线”（这里用触点 + 某方向）
-        rotatep1 = touch_poly.front();
-        rotatep2 = touch_poly.front() + (intersection - touch_poly.front()).normalized().cross(gravity);
-        has_rotation_line = true;
-      }
-    }
-    else if (touch_poly.size() == 2)
-    {
-      // 两个支撑点：形成一条支撑边
-      Eigen::Vector3d p1 = touch_poly[0];
-      Eigen::Vector3d p2 = touch_poly[1];
-
-      // 投影点 intersection 到边 p1p2 的投影 projection
-      Eigen::Vector3d p1p2 = p2 - p1;
-      Eigen::Vector3d p1a = intersection - p1;
-      double t = p1a.dot(p1p2) / p1p2.dot(p1p2);
-      Eigen::Vector3d projection = p1 + t * p1p2;
-
-      // 如果投影点就在支撑边上 -> 稳定
-      if ((projection - intersection).norm() < 1e-6)
-      {
-        is_stable = true;
-      }
-      else
-      {
-        // 不稳定：绕这条支撑边旋转
-        rotatep1 = p1;
-        rotatep2 = p2;
-        has_rotation_line = true;
-      }
+      is_stable = true;
     }
     else
     {
-      // 多于两个支撑点：形成支撑多边形
-      if (pointInPoly(touch_poly, intersection))
-      {
-        // 投影在多边形内：稳定
-        is_stable = true;
-      }
-      else
-      {
-        // 投影在多边形外：需要找到一条“倾覆边”作为旋转轴
-        double min_dis = std::numeric_limits<double>::max();
+      // Projection is outside the support polygon.  Find the nearest exterior
+      // hull edge and use it as the candidate rotation axis.
+      double min_dis = std::numeric_limits<double>::max();
+      bool found_rotation_edge = false;
 
-        for (size_t i = 0; i < touch_poly.size(); ++i)
+      for (size_t i = 0; i < touch_poly.size(); ++i)
+      {
+        const auto &p1 = touch_poly[i];
+        const auto &p2 = touch_poly[(i + 1) % touch_poly.size()];
+
+        Eigen::Vector2d v1(p2.x() - p1.x(), p2.y() - p1.y());
+        Eigen::Vector2d v2(intersection.x() - p1.x(),
+                           intersection.y() - p1.y());
+        if (v1.x() * v2.y() - v2.x() * v1.y() >= 0)
         {
-          const auto &p1 = touch_poly[i];
-          const auto &p2 = touch_poly[(i + 1) % touch_poly.size()];
-
-          // 先用 2D 叉积判断 intersection 在该边的哪一侧
-          Eigen::Vector2d v1(p2.x() - p1.x(), p2.y() - p1.y());
-          Eigen::Vector2d v2(intersection.x() - p1.x(), intersection.y() - p1.y());
-          if (v1.x() * v2.y() - v2.x() * v1.y() >= 0)
-          {
-            continue; // 在“内侧”，不是倾覆边候选
-          }
-
-          // 计算 intersection 到边 p1p2 的距离 dis，选最近的那条边作为旋转轴
-          Eigen::Vector3d p1p2 = p2 - p1;
-          Eigen::Vector3d p1a = intersection - p1;
-          double t = p1a.dot(p1p2) / p1p2.dot(p1p2);
-          Eigen::Vector3d projection = p1 + t * p1p2;
-          double dis = (projection - intersection).norm();
-
-          if (dis < min_dis)
-          {
-            min_dis = dis;
-            rotatep1 = p1;
-            rotatep2 = p2;
-          }
+          continue;
         }
 
-        has_rotation_line = true;
+        const Eigen::Vector3d p1p2 = p2 - p1;
+        const double edge_norm_squared = p1p2.squaredNorm();
+        if (!std::isfinite(edge_norm_squared) || edge_norm_squared < 1e-12)
+        {
+          continue;
+        }
+        const Eigen::Vector3d p1a = intersection - p1;
+        const double t = p1a.dot(p1p2) / edge_norm_squared;
+        const Eigen::Vector3d projection = p1 + t * p1p2;
+        const double dis = (projection - intersection).norm();
+
+        if (std::isfinite(dis) && dis < min_dis)
+        {
+          min_dis = dis;
+          rotatep1 = p1;
+          rotatep2 = p2;
+          found_rotation_edge = true;
+        }
       }
+
+      has_rotation_line = found_rotation_edge;
     }
 
     // 如果稳定了，就进入下一轮循环开头，开头会 return 2
     if (is_stable)
     {
-      stable = 1;
       updateRollPitchFromT(T_matrix);
-      return 2;
+      if (exceedsTiltLimit(T_matrix))
+      {
+        stable = 0;
+        return kPoseUnstable;
+      }
+      stable = 1;
+      return kPoseSuccess;
     }
 
     if (has_rotation_line)
     {
       // 旋转轴的方向与参数化直线
-      Eigen::Vector3d direction = (rotatep2 - rotatep1).normalized();
+      const Eigen::Vector3d axis = rotatep2 - rotatep1;
+      if (!axis.allFinite() || axis.norm() < 1e-6)
+      {
+        return kPoseFailure;
+      }
+      Eigen::Vector3d direction = axis.normalized();
       Eigen::ParametrizedLine<double, 3> rotation_line(rotatep1, direction);
 
       // d_theta：要绕旋转轴转的角度（选一个最小可行值）
@@ -2893,6 +3071,10 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx, double &roll, d
       // 为了计算点在旋转轴左/右侧，这里投影到 XY 平面做 2D 判断
       Eigen::Vector2d rot_origin(rotation_line.origin().x(), rotation_line.origin().y());
       Eigen::Vector2d rot_dir(rotation_line.direction().x(), rotation_line.direction().y());
+      if (!rot_dir.allFinite() || rot_dir.norm() < 1e-6)
+      {
+        return kPoseFailure;
+      }
       Eigen::Vector2d rot_dir_norm = rot_dir.normalized();
 
       // 遍历所有非接触点（gap > touch_gap_threshold_），估计需要转多少角
@@ -2933,6 +3115,10 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx, double &roll, d
       // 如果找到了有效 d_theta，就绕 rotation_line 旋转更新 T_matrix
       if (d_theta < std::numeric_limits<double>::max())
       {
+        const double max_rotation_step =
+            fine_max_rotation_step_deg * M_PI / 180.0;
+        d_theta = std::max(0.0, std::min(d_theta, max_rotation_step));
+
         // 下面是一套标准的“绕任意轴旋转”的齐次矩阵构造：
         // 1) 平移到轴原点
         // 2) 旋转坐标系，让旋转轴对齐到 z 轴
@@ -2963,7 +3149,27 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx, double &roll, d
 
         // 旋转可能引起 xy 平移漂移，这里强制把 xy 拉回 center_pos
         T_matrix.block<2, 1>(0, 3) = Eigen::Vector2d(center_pos.x(), center_pos.y());
+
+        if (!T_matrix.allFinite())
+        {
+          return kPoseFailure;
+        }
+
+        if (exceedsTiltLimit(T_matrix))
+        {
+          stable = 0;
+          updateRollPitchFromT(T_matrix);
+          return kPoseUnstable;
+        }
       }
+      else
+      {
+        return kPoseFailure;
+      }
+    }
+    else
+    {
+      return kPoseFailure;
     }
 
     iteration++;
@@ -2972,11 +3178,7 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx, double &roll, d
   // -----------------------------------------
   // [H1] 从最终旋转矩阵提取 roll/pitch（并转成度）
   // -----------------------------------------
-  Eigen::Matrix3d R = T_matrix.block<3, 3>(0, 0);
-
-  // 这里是标准欧拉角提取（假设 R = Rz*Ry*Rx 或类似约定）
-  roll = std::atan2(R(2, 1), R(2, 2)) * 180.0 / M_PI;
-  pitch = std::asin(-R(2, 0)) * 180.0 / M_PI;
+  updateRollPitchFromT(T_matrix);
 
   ROS_INFO("Pose result (vehicle %d) at cell (%.2f, %.2f): roll=%.3f, pitch=%.3f, stable=%d, collision=%d",
            vehicle_type, center_pos.x(), center_pos.y(), roll, pitch, is_stable ? 1 : 0, collision ? 1 : 0);
@@ -2988,8 +3190,9 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx, double &roll, d
   // -----------------------------------------
   // 2 = 成功且稳定
   // 1 = 碰撞（上面已经提前 return 1）
+  // 3 = 姿态超过物理倾角限制
   // 0 = 未稳定或失败
-  return is_stable ? 2 : 0;
+  return is_stable ? kPoseSuccess : kPoseFailure;
 }
 
 // ==================== Plane Fitting ====================
@@ -3139,6 +3342,11 @@ Eigen::Vector3d Mapping::fitPlane(const std::vector<Eigen::Vector3d> &points)
   //
   // 对称矩阵用 SelfAdjointEigenSolver 非常合适，数值稳定且返回正交基
   Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver(cov);
+  if (solver.info() != Eigen::Success ||
+      !solver.eigenvalues().allFinite())
+  {
+    return Eigen::Vector3d::UnitZ();
+  }
 
   // -----------------------------------------
   // [4] 平面法向 = 最小特征值对应的特征向量
@@ -3146,6 +3354,10 @@ Eigen::Vector3d Mapping::fitPlane(const std::vector<Eigen::Vector3d> &points)
   // 直觉：平面点云在“法向方向”的方差最小（点都贴在一个面上）
   // 因此 cov 最小特征值方向就是法向方向
   Eigen::Vector3d normal = solver.eigenvectors().col(0);
+  if (!normal.allFinite() || normal.norm() < 1e-9)
+  {
+    return Eigen::Vector3d::UnitZ();
+  }
 
   // -----------------------------------------
   // [5] 统一法向朝向：保证朝上（z 正方向）

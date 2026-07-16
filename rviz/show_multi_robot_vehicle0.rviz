@@ -196,10 +196,10 @@ Visualization Manager:
       Autocompute Intensity Bounds: true
       Class: grid_map_rviz_plugin/GridMap
       Color: 200; 200; 200
-      Color Layer: traversability_fine_wheeled
+      Color Layer: traversability_fine_tracked
       Color Transformer: IntensityLayer
       Enabled: true
-      Height Layer: traversability_fine_wheeled
+      Height Layer: traversability_fine_tracked
       Height Transformer: Layer
       History Length: 1
       Invert Rainbow: false
@@ -310,7 +310,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 99.8855972290039
+      Distance: 99.61540222167969
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -318,9 +318,9 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: 23.072330474853516
-        Y: 28.63744354248047
-        Z: -15.018794059753418
+        X: 20.240066528320312
+        Y: 26.303424835205078
+        Z: -15.021175384521484
       Focal Shape Fixed Size: false
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
@@ -328,7 +328,7 @@ Visualization Manager:
       Near Clip Distance: 0.009999999776482582
       Pitch: 1.5697963237762451
       Target Frame: vehicle0/vehicle
-      Yaw: 4.698592185974121
+      Yaw: 4.708592414855957
     Saved: ~
 Window Geometry:
   Displays:
