@@ -8,6 +8,10 @@
 #include "multi_robot_mapping.h"
 #include <ros/ros.h>
 #include <ros/package.h>
+#include <sensor_msgs/PointCloud2.h>
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
+#include <pcl_conversions/pcl_conversions.h>
 #include <queue>
 #include <algorithm>
 #include <limits>
@@ -21,6 +25,10 @@
 #include <fstream>
 #include <sstream>
 #include <functional>
+#include <cstdint>
+#include <mutex>
+#include <thread>
+#include <condition_variable>
 
 namespace
 {
@@ -43,6 +51,16 @@ namespace
   // 以精细化周期编号作为缓存世代，保证同一周期内复用地形
   // 子图，下一周期地图更新后不会沿用过期缓存。
   thread_local std::size_t fine_cycle_generation = 0;
+
+  // Local XYZI traversability cloud configuration.  The publisher is created
+  // in Mapping's constructor so the topic is visible immediately after node
+  // startup, even before the first synchronized scan arrives.
+  bool publish_local_trav_cloud = true;
+  std::string local_trav_vehicle_type = "wheeled";
+  std::string local_trav_layer = "traversability_fine_wheeled";
+  std::string local_trav_cloud_topic = "local_traversability_cloud";
+  double local_trav_unknown_height_offset = 0.0;
+  ros::Publisher local_trav_cloud_publisher;
 
   /**
    * @brief Single-slot background executor used by global_trav_map.
@@ -481,6 +499,69 @@ Mapping::Mapping(ros::NodeHandle &nh, ros::NodeHandle &pnh)
 
   // Create publisher for grid map
   gridmap_pub_ = nh_.advertise<grid_map_msgs::GridMap>("trav_map", 10);
+
+  const std::string vehicle_namespace = nh_.getNamespace();
+
+  const std::string vehicle_type_param =
+      (vehicle_namespace == "/")
+          ? "/vehicle_type"
+          : vehicle_namespace + "/vehicle_type";
+
+  ros::param::param<std::string>(
+      vehicle_type_param,
+      local_trav_vehicle_type,
+      "wheeled");
+
+  ROS_INFO("vehicle_type parameter path: %s",
+           vehicle_type_param.c_str());
+
+  ROS_INFO("local_trav_vehicle_type: %s",
+           local_trav_vehicle_type.c_str());
+
+  // Create the platform-specific XYZI cloud publisher at startup.  Keeping
+  // this outside buildGridMapMessage() makes the topic immediately visible in
+  // `rostopic list` and avoids lazy initialization being mistaken for a
+  // missing publisher.
+  pnh_.param<bool>("publish_traversability_cloud",
+                   publish_local_trav_cloud, true);
+  // nh_.param<std::string>("vehicle_type",
+  //                        local_trav_vehicle_type, "wheeled");
+  pnh_.param<std::string>("traversability_cloud_topic",
+                          local_trav_cloud_topic,
+                          "local_traversability_cloud");
+  pnh_.param<double>("unknown_height_offset",
+                     local_trav_unknown_height_offset, 0.0);
+
+  if (local_trav_vehicle_type == "tracked")
+  {
+    local_trav_layer = "traversability_fine_tracked";
+  }
+  else if (local_trav_vehicle_type == "wheeled")
+  {
+    local_trav_layer = "traversability_fine_wheeled";
+  }
+  else
+  {
+    ROS_WARN("Unknown vehicle_type '%s'; falling back to wheeled",
+             local_trav_vehicle_type.c_str());
+    local_trav_vehicle_type = "wheeled";
+    local_trav_layer = "traversability_fine_wheeled";
+  }
+
+  if (publish_local_trav_cloud)
+  {
+    local_trav_cloud_publisher =
+        nh_.advertise<sensor_msgs::PointCloud2>(
+            local_trav_cloud_topic, 1, false);
+    ROS_INFO("Publishing %s traversability cloud on %s using layer %s",
+             local_trav_vehicle_type.c_str(),
+             local_trav_cloud_publisher.getTopic().c_str(),
+             local_trav_layer.c_str());
+  }
+  else
+  {
+    ROS_INFO("Local traversability cloud publication disabled");
+  }
 
   ROS_INFO("Successfully subscribed to: %s (synchronized)", scan_topic_.c_str());
   ROS_INFO("Successfully subscribed to: /laser_odom_init (synchronized)");
@@ -2822,8 +2903,7 @@ void Mapping::finegrained_traversability_mapping()
             : M_PI * static_cast<double>(heading_index) /
                   static_cast<double>(fine_heading_samples);
     fine_headings[static_cast<std::size_t>(heading_index)] = heading;
-    fine_heading_rotations[
-        static_cast<std::size_t>(heading_index)] =
+    fine_heading_rotations[static_cast<std::size_t>(heading_index)] =
         Eigen::AngleAxisd(heading, z_axis).toRotationMatrix();
   }
 
@@ -2940,11 +3020,10 @@ void Mapping::finegrained_traversability_mapping()
       // d=0 表示平坦地形，d=1 表示达到效率参考上限的复杂地形。
       // 修正量允许为负：轮式在复杂地形加罚，履带在复杂地形获益。
       // 但最终结果始终不低于平台几何代价，因此不会降低硬障碍。
-      cell_metrics.efficiency_adjustment = efficiency_weight * (
-          capability.efficiency_flat_penalty *
-              (1.0 - terrain_severity) +
-          capability.efficiency_rough_penalty * terrain_severity -
-          capability.efficiency_rough_bonus * terrain_severity);
+      cell_metrics.efficiency_adjustment = efficiency_weight * (capability.efficiency_flat_penalty *
+                                                                    (1.0 - terrain_severity) +
+                                                                capability.efficiency_rough_penalty * terrain_severity -
+                                                                capability.efficiency_rough_bonus * terrain_severity);
 
       const double adjusted_geometry_cost = clamp01(
           cell_metrics.geo_cost +
@@ -3030,8 +3109,7 @@ void Mapping::finegrained_traversability_mapping()
             fine_headings[static_cast<std::size_t>(heading_index)];
         const double heading_deg = heading * 180.0 / M_PI;
         const Eigen::Matrix3d &heading_rotation =
-            fine_heading_rotations[
-                static_cast<std::size_t>(heading_index)];
+            fine_heading_rotations[static_cast<std::size_t>(heading_index)];
 
         double roll = 0.0;
         double pitch = 0.0;
@@ -3123,8 +3201,8 @@ void Mapping::finegrained_traversability_mapping()
       {
         ++vehicle.count_success;
         const double heading_cost = 1.0 - clamp01(
-            static_cast<double>(success_headings) /
-            static_cast<double>(fine_heading_samples));
+                                              static_cast<double>(success_headings) /
+                                              static_cast<double>(fine_heading_samples));
         const double pose_cost = clamp01(
             best_partial_pose_cost +
             pose_heading_weight * heading_cost);
@@ -5389,7 +5467,90 @@ bool Mapping::buildGridMapMessage(grid_map_msgs::GridMap &message)
   }
 
   // ==========================================
-  // [4] 只保留白名单层（减少消息体积）
+  // [4] Publish local platform-specific XYZI traversability cloud.
+  // ==========================================
+  // Reuse the same local_map that is already cropped for trav_map.  This
+  // avoids a second getSubmap() and keeps the additional publication cheap.
+  if (publish_local_trav_cloud)
+  {
+    if (!local_map.exists("elevation_BGK") ||
+        !local_map.exists(local_trav_layer))
+    {
+      ROS_WARN_THROTTLE(
+          2.0,
+          "Cannot publish traversability cloud: required layer missing (%s)",
+          local_trav_layer.c_str());
+    }
+    else
+    {
+      pcl::PointCloud<pcl::PointXYZI> trav_cloud;
+      const grid_map::Size local_size = local_map.getSize();
+      trav_cloud.points.reserve(
+          static_cast<std::size_t>(local_size(0)) *
+          static_cast<std::size_t>(local_size(1)));
+
+      for (grid_map::GridMapIterator it(local_map);
+           !it.isPastEnd(); ++it)
+      {
+        grid_map::Position position;
+        if (!local_map.getPosition(*it, position))
+        {
+          continue;
+        }
+
+        const float elevation =
+            local_map.at("elevation_BGK", *it);
+        const float traversability =
+            local_map.at(local_trav_layer, *it);
+
+        pcl::PointXYZI point;
+        point.x = static_cast<float>(position.x());
+        point.y = static_cast<float>(position.y());
+
+        // Known terrain uses its observed/BGK-interpolated surface height.
+        // A completely unknown cell has no real height, so keep it in the
+        // cloud at the current robot height (plus an optional offset).
+        point.z = std::isfinite(elevation)
+                      ? elevation
+                      : static_cast<float>(
+                            current_pos.z() +
+                            local_trav_unknown_height_offset);
+
+        // Cost convention: 0 is easiest to traverse, 1 is non-traversable.
+        // Unknown or not-yet-computed cells are conservatively assigned 1.
+        point.intensity = std::isfinite(traversability)
+                              ? std::max(
+                                    0.0f,
+                                    std::min(1.0f, traversability))
+                              : 1.0f;
+        trav_cloud.points.push_back(point);
+      }
+
+      trav_cloud.width =
+          static_cast<std::uint32_t>(trav_cloud.points.size());
+      trav_cloud.height = 1;
+      trav_cloud.is_dense = true;
+
+      sensor_msgs::PointCloud2 trav_cloud_message;
+      pcl::toROSMsg(trav_cloud, trav_cloud_message);
+      trav_cloud_message.header.frame_id = local_map.getFrameId();
+
+      ros::Time cloud_stamp;
+      if (local_map.getTimestamp() > 0)
+      {
+        cloud_stamp.fromNSec(local_map.getTimestamp());
+      }
+      else
+      {
+        cloud_stamp = ros::Time::now();
+      }
+      trav_cloud_message.header.stamp = cloud_stamp;
+      local_trav_cloud_publisher.publish(trav_cloud_message);
+    }
+  }
+
+  // ==========================================
+  // [5] 只保留白名单层（减少消息体积）
   // ==========================================
   // 发布层白名单：只传这些层，避免把很多内部计算层发出去导致消息巨大
   static const std::vector<std::string> layers_to_publish = {
@@ -5420,7 +5581,7 @@ bool Mapping::buildGridMapMessage(grid_map_msgs::GridMap &message)
   }
 
   // ==========================================
-  // [5] 转 ROS 消息
+  // [6] 转 ROS 消息
   // ==========================================
   // GridMapRosConverter 会把 local_map 的 metadata（尺寸、分辨率、坐标系）
   // 和各 layer 的 matrix 数据打包成 grid_map_msgs::GridMap 消息

@@ -2,6 +2,13 @@
 <!-- Complete launch configuration with package-local traversability CSV output. -->
 <launch>
     <arg name="ns" default="vehicle0" />
+    <!-- Platform type selects the corresponding fine traversability layer. -->
+    <arg name="vehicle_type" default="wheeled" />
+    <arg name="publish_traversability_cloud" default="true" />
+    <arg name="traversability_cloud_topic"
+        default="local_traversability_cloud" />
+    <!-- Used only when both terrain elevation and BGK elevation are unknown. -->
+    <arg name="unknown_height_offset" default="0.0" />
     <arg name="frame_id" default="map" />
     <arg name="queue_size" default="10" />
     <arg name="debug_mode" default="false" />
@@ -127,6 +134,7 @@
     <arg name="global_gridmap_topic" default="global_trav_map" />
     <arg name="global_publish_every_n" default="50" />
 
+    <param name="vehicle_type" value="$(arg vehicle_type)" />
 
     <node name="multi_robot_mapping_node" pkg="obstacle_mapping" type="multi_robot_mapping_node"
         output="screen">
@@ -137,6 +145,13 @@
 
         <!-- Vehicle and debug settings -->
         <param name="debug_mode" value="$(arg debug_mode)" />
+
+        <param name="publish_traversability_cloud"
+            value="$(arg publish_traversability_cloud)" />
+        <param name="traversability_cloud_topic"
+            value="$(arg traversability_cloud_topic)" />
+        <param name="unknown_height_offset"
+            value="$(arg unknown_height_offset)" />
 
         <!-- Sensor range parameters -->
         <param name="max_range" value="$(arg max_range)" />

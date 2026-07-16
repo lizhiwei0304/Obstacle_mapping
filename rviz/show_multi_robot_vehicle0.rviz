@@ -7,6 +7,7 @@ Panels:
         - /Status1
         - /RegisteredScan1/Autocompute Value Bounds1
         - /GridMap2
+        - /PointCloud22
       Splitter Ratio: 0.5
     Tree Height: 591
   - Class: rviz/Selection
@@ -26,7 +27,7 @@ Panels:
   - Class: rviz/Time
     Name: Time
     SyncMode: 0
-    SyncSource: ""
+    SyncSource: PointCloud2
 Preferences:
   PromptSaveOnExit: true
 Toolbars:
@@ -198,7 +199,7 @@ Visualization Manager:
       Color: 200; 200; 200
       Color Layer: traversability_fine_wheeled
       Color Transformer: IntensityLayer
-      Enabled: true
+      Enabled: false
       Height Layer: traversability_fine_wheeled
       Height Transformer: Layer
       History Length: 1
@@ -212,7 +213,7 @@ Visualization Manager:
       Topic: /vehicle0/global_trav_map
       Unreliable: false
       Use Rainbow: false
-      Value: true
+      Value: false
     - Class: rviz/Marker
       Enabled: true
       Marker Topic: /vehicle0/tare_visualizer/local_planning_horizon
@@ -282,6 +283,34 @@ Visualization Manager:
       Use Fixed Frame: true
       Use rainbow: true
       Value: true
+    - Alpha: 1
+      Autocompute Intensity Bounds: true
+      Autocompute Value Bounds:
+        Max Value: 10
+        Min Value: -10
+        Value: true
+      Axis: Z
+      Channel Name: intensity
+      Class: rviz/PointCloud2
+      Color: 255; 255; 255
+      Color Transformer: Intensity
+      Decay Time: 0
+      Enabled: true
+      Invert Rainbow: false
+      Max Color: 255; 255; 255
+      Min Color: 0; 0; 0
+      Name: PointCloud2
+      Position Transformer: XYZ
+      Queue Size: 10
+      Selectable: true
+      Size (Pixels): 3
+      Size (m): 0.009999999776482582
+      Style: Points
+      Topic: /vehicle0/local_traversability_cloud
+      Unreliable: false
+      Use Fixed Frame: true
+      Use rainbow: true
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
@@ -310,7 +339,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 94.85839080810547
+      Distance: 60.12114715576172
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -318,15 +347,15 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: 22.069185256958008
-        Y: 28.732990264892578
-        Z: -15.137487411499023
+        X: 2.7763679027557373
+        Y: 1.3368586301803589
+        Z: -15.164854049682617
       Focal Shape Fixed Size: false
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 1.5697963237762451
+      Pitch: 1.5647963285446167
       Target Frame: vehicle0/vehicle
       Yaw: 4.71359395980835
     Saved: ~
