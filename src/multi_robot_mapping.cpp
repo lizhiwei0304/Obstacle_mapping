@@ -20,6 +20,7 @@
 #include <iomanip>
 #include <fstream>
 #include <sstream>
+#include <functional>
 
 namespace
 {
@@ -42,6 +43,129 @@ namespace
   // 以精细化周期编号作为缓存世代，保证同一周期内复用地形
   // 子图，下一周期地图更新后不会沿用过期缓存。
   thread_local std::size_t fine_cycle_generation = 0;
+
+  /**
+   * @brief Single-slot background executor used by global_trav_map.
+   *
+   * At most one task can be running and one latest task can be pending.  A new
+   * request replaces the pending one instead of extending a FIFO queue.  This
+   * keeps global publication best-effort and prevents it from accumulating
+   * latency behind the real-time local map pipeline.
+   */
+  class LatestGlobalPublishWorker
+  {
+  public:
+    LatestGlobalPublishWorker()
+        : stop_requested_(false), pending_(false), running_(false),
+          worker_(&LatestGlobalPublishWorker::run, this)
+    {
+    }
+
+    ~LatestGlobalPublishWorker()
+    {
+      shutdown();
+    }
+
+    void requestLatest(std::function<void()> task)
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (stop_requested_)
+      {
+        return;
+      }
+
+      // Assignment intentionally replaces an older task that has not started.
+      pending_task_ = std::move(task);
+      pending_ = true;
+      cv_.notify_one();
+    }
+
+    void shutdown()
+    {
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (stop_requested_)
+        {
+          return;
+        }
+        stop_requested_ = true;
+        pending_ = false;
+        pending_task_ = std::function<void()>();
+      }
+      cv_.notify_all();
+
+      if (worker_.joinable())
+      {
+        worker_.join();
+      }
+    }
+
+    bool hasPendingTask()
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      return pending_;
+    }
+
+  private:
+    void run()
+    {
+      while (true)
+      {
+        std::function<void()> task;
+        {
+          std::unique_lock<std::mutex> lock(mutex_);
+          cv_.wait(lock, [this]()
+                   { return stop_requested_ || pending_; });
+
+          if (stop_requested_)
+          {
+            break;
+          }
+
+          task = std::move(pending_task_);
+          pending_task_ = std::function<void()>();
+          pending_ = false;
+          running_ = true;
+        }
+
+        try
+        {
+          if (task)
+          {
+            task();
+          }
+        }
+        catch (const std::exception &e)
+        {
+          ROS_ERROR("Asynchronous global map publication failed: %s",
+                    e.what());
+        }
+        catch (...)
+        {
+          ROS_ERROR("Asynchronous global map publication failed with an unknown exception");
+        }
+
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          running_ = false;
+        }
+      }
+    }
+
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    bool stop_requested_;
+    bool pending_;
+    bool running_;
+    std::function<void()> pending_task_;
+    std::thread worker_;
+  };
+
+  LatestGlobalPublishWorker &globalPublishWorker()
+  {
+    static LatestGlobalPublishWorker worker;
+    return worker;
+  }
 
   /**
    * @brief Fill only a small, closed unknown component containing the initial
@@ -391,6 +515,9 @@ Mapping::~Mapping()
     processing_thread_.join();
     ROS_INFO("Processing thread joined successfully");
   }
+
+  // No task may retain `this` after Mapping starts destruction.
+  globalPublishWorker().shutdown();
 
   ROS_INFO("Mapping destructor called");
 }
@@ -2695,7 +2822,8 @@ void Mapping::finegrained_traversability_mapping()
             : M_PI * static_cast<double>(heading_index) /
                   static_cast<double>(fine_heading_samples);
     fine_headings[static_cast<std::size_t>(heading_index)] = heading;
-    fine_heading_rotations[static_cast<std::size_t>(heading_index)] =
+    fine_heading_rotations[
+        static_cast<std::size_t>(heading_index)] =
         Eigen::AngleAxisd(heading, z_axis).toRotationMatrix();
   }
 
@@ -2812,10 +2940,11 @@ void Mapping::finegrained_traversability_mapping()
       // d=0 表示平坦地形，d=1 表示达到效率参考上限的复杂地形。
       // 修正量允许为负：轮式在复杂地形加罚，履带在复杂地形获益。
       // 但最终结果始终不低于平台几何代价，因此不会降低硬障碍。
-      cell_metrics.efficiency_adjustment = efficiency_weight * (capability.efficiency_flat_penalty *
-                                                                    (1.0 - terrain_severity) +
-                                                                capability.efficiency_rough_penalty * terrain_severity -
-                                                                capability.efficiency_rough_bonus * terrain_severity);
+      cell_metrics.efficiency_adjustment = efficiency_weight * (
+          capability.efficiency_flat_penalty *
+              (1.0 - terrain_severity) +
+          capability.efficiency_rough_penalty * terrain_severity -
+          capability.efficiency_rough_bonus * terrain_severity);
 
       const double adjusted_geometry_cost = clamp01(
           cell_metrics.geo_cost +
@@ -2901,7 +3030,8 @@ void Mapping::finegrained_traversability_mapping()
             fine_headings[static_cast<std::size_t>(heading_index)];
         const double heading_deg = heading * 180.0 / M_PI;
         const Eigen::Matrix3d &heading_rotation =
-            fine_heading_rotations[static_cast<std::size_t>(heading_index)];
+            fine_heading_rotations[
+                static_cast<std::size_t>(heading_index)];
 
         double roll = 0.0;
         double pitch = 0.0;
@@ -2993,8 +3123,8 @@ void Mapping::finegrained_traversability_mapping()
       {
         ++vehicle.count_success;
         const double heading_cost = 1.0 - clamp01(
-                                              static_cast<double>(success_headings) /
-                                              static_cast<double>(fine_heading_samples));
+            static_cast<double>(success_headings) /
+            static_cast<double>(fine_heading_samples));
         const double pose_cost = clamp01(
             best_partial_pose_cost +
             pose_heading_weight * heading_cost);
@@ -5093,90 +5223,126 @@ void Mapping::publishGridMap()
   }
   global_publish_counter = 0;
 
-  grid_map::GridMap global_explored_map;
+  // Capture only immutable request data.  If the worker is already busy this
+  // task replaces the older pending request; requests never form a FIFO.
+  const double requested_min_x = global_swept_min_x;
+  const double requested_min_y = global_swept_min_y;
+  const double requested_max_x = global_swept_max_x;
+  const double requested_max_y = global_swept_max_y;
+  const ros::Publisher requested_publisher = global_gridmap_pub;
 
-  {
-    std::lock_guard<std::mutex> lock(gridmap_publish_mutex_);
+  globalPublishWorker().requestLatest(
+      [this, requested_min_x, requested_min_y,
+       requested_max_x, requested_max_y,
+       requested_publisher]() mutable
+      {
+        const ros::WallTime total_start = ros::WallTime::now();
+        grid_map::GridMap global_explored_map;
 
-    if (!global_swept_bounds_initialized)
-    {
-      ROS_WARN_THROTTLE(2.0, "No swept map bounds yet; skip global grid map publication.");
-      return;
-    }
+        // Global publication is lower priority than point-cloud processing.
+        // Wait until the processing queue is idle.  If a newer global request
+        // arrived while waiting, abandon this older request; the worker will
+        // execute the replacement next.
+        waitUntilIdle();
+        if (globalPublishWorker().hasPendingTask())
+        {
+          return;
+        }
 
-    // Add one-cell padding and clamp the requested submap to the fixed global
-    // map boundary.
-    const grid_map::Position map_center = height_map_.getPosition();
-    const grid_map::Length map_length = height_map_.getLength();
-    const double resolution = height_map_.getResolution();
-    const double map_min_x = map_center.x() - 0.5 * map_length.x();
-    const double map_min_y = map_center.y() - 0.5 * map_length.y();
-    const double map_max_x = map_center.x() + 0.5 * map_length.x();
-    const double map_max_y = map_center.y() + 0.5 * map_length.y();
+        // The lock is held only while taking a coherent GridMap snapshot.
+        // Layer filtering, ROS serialization and publication happen after the
+        // lock is released and therefore cannot block local map updates.
+        const ros::WallTime snapshot_start = ros::WallTime::now();
+        {
+          std::lock_guard<std::mutex> lock(gridmap_publish_mutex_);
 
-    double min_x = std::max(map_min_x,
-                            global_swept_min_x - resolution);
-    double min_y = std::max(map_min_y,
-                            global_swept_min_y - resolution);
-    double max_x = std::min(map_max_x,
-                            global_swept_max_x + resolution);
-    double max_y = std::min(map_max_y,
-                            global_swept_max_y + resolution);
+          const grid_map::Position map_center = height_map_.getPosition();
+          const grid_map::Length map_length = height_map_.getLength();
+          const double resolution = height_map_.getResolution();
+          const double map_min_x =
+              map_center.x() - 0.5 * map_length.x();
+          const double map_min_y =
+              map_center.y() - 0.5 * map_length.y();
+          const double map_max_x =
+              map_center.x() + 0.5 * map_length.x();
+          const double map_max_y =
+              map_center.y() + 0.5 * map_length.y();
 
-    const double length_x = std::max(resolution, max_x - min_x);
-    const double length_y = std::max(resolution, max_y - min_y);
-    const grid_map::Position submap_center(min_x + 0.5 * length_x,
-                                           min_y + 0.5 * length_y);
-    const grid_map::Length submap_length(length_x, length_y);
+          const double min_x = std::max(
+              map_min_x, requested_min_x - resolution);
+          const double min_y = std::max(
+              map_min_y, requested_min_y - resolution);
+          const double max_x = std::min(
+              map_max_x, requested_max_x + resolution);
+          const double max_y = std::min(
+              map_max_y, requested_max_y + resolution);
 
-    bool success = false;
-    global_explored_map = height_map_.getSubmap(submap_center, submap_length, success);
-    if (!success)
-    {
-      ROS_WARN_THROTTLE(2.0, "Failed to crop the global explored grid map.");
-      return;
-    }
-  }
+          const double length_x =
+              std::max(resolution, max_x - min_x);
+          const double length_y =
+              std::max(resolution, max_y - min_y);
+          const grid_map::Position submap_center(
+              min_x + 0.5 * length_x,
+              min_y + 0.5 * length_y);
+          const grid_map::Length submap_length(length_x, length_y);
 
-  // Publish only externally useful layers.  Internal statistics and
-  // incremental-computation flags remain stored in height_map_ but are not
-  // serialized into the large ROS message.
-  static const std::vector<std::string> global_layers_to_publish = {
-      "elevation",
-      "elevation_BGK",
-      "slope",
-      "roughness",
-      "step",
-      "slope_deg",
-      "roughness_raw",
-      "step_height",
-      "traversability",
-      "traversability_fine_wheeled",
-      "traversability_fine_tracked",
-      "critical"};
+          bool success = false;
+          global_explored_map = height_map_.getSubmap(
+              submap_center, submap_length, success);
+          if (!success)
+          {
+            ROS_WARN_THROTTLE(
+                2.0, "Failed to crop the asynchronous global map snapshot.");
+            return;
+          }
+        }
+        const double snapshot_seconds =
+            (ros::WallTime::now() - snapshot_start).toSec();
 
-  const auto global_existing_layers = global_explored_map.getLayers();
-  for (const auto &layer : global_existing_layers)
-  {
-    if (std::find(global_layers_to_publish.begin(),
-                  global_layers_to_publish.end(),
-                  layer) == global_layers_to_publish.end())
-    {
-      global_explored_map.erase(layer);
-    }
-  }
+        static const std::vector<std::string>
+            global_layers_to_publish = {
+                "elevation",
+                "elevation_BGK",
+                "slope",
+                "roughness",
+                "step",
+                "slope_deg",
+                "roughness_raw",
+                "step_height",
+                "traversability",
+                "traversability_fine_wheeled",
+                "traversability_fine_tracked",
+                "critical"};
 
-  global_explored_map.setTimestamp(ros::Time::now().toNSec());
+        const auto global_existing_layers =
+            global_explored_map.getLayers();
+        for (const auto &layer : global_existing_layers)
+        {
+          if (std::find(global_layers_to_publish.begin(),
+                        global_layers_to_publish.end(),
+                        layer) == global_layers_to_publish.end())
+          {
+            global_explored_map.erase(layer);
+          }
+        }
 
-  grid_map_msgs::GridMap global_message;
-  grid_map::GridMapRosConverter::toMessage(global_explored_map, global_message);
+        global_explored_map.setTimestamp(
+            ros::Time::now().toNSec());
 
-  global_gridmap_pub.publish(global_message);
+        grid_map_msgs::GridMap global_message;
+        grid_map::GridMapRosConverter::toMessage(
+            global_explored_map, global_message);
+        requested_publisher.publish(global_message);
 
-  ROS_INFO_THROTTLE(2.0,
-                    "Published global swept grid map: %.1f x %.1f m",
-                    global_explored_map.getLength().x(),
-                    global_explored_map.getLength().y());
+        const double total_seconds =
+            (ros::WallTime::now() - total_start).toSec();
+        ROS_INFO_THROTTLE(
+            2.0,
+            "Published async global map: %.1f x %.1f m, snapshot=%.3f s, total=%.3f s",
+            global_explored_map.getLength().x(),
+            global_explored_map.getLength().y(),
+            snapshot_seconds, total_seconds);
+      });
 }
 
 bool Mapping::buildGridMapMessage(grid_map_msgs::GridMap &message)
