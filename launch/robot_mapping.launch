@@ -31,7 +31,7 @@
 
     <!-- Fill only a small closed unknown component at the initial pose. -->
     <arg name="enable_startup_hole_fill" default="true" />
-    <arg name="startup_hole_radius" default="3.0" />
+    <arg name="startup_hole_radius" default="5.0" />
     <arg name="startup_hole_max_cells" default="200" />
     <arg name="startup_hole_min_boundary_cells" default="12" />
     <arg name="startup_hole_max_attempts" default="30" />
