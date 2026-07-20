@@ -35,7 +35,6 @@
 #include <unordered_set>
 #include <atomic>
 
-
 class Mapping
 {
 public:
@@ -140,6 +139,7 @@ private:
 
     // 参数：基础设置
     std::string scan_topic_;
+    std::string odom_topic_;
     std::string frame_id_;
     int queue_size_;
     bool debug_mode_;
@@ -226,7 +226,6 @@ private:
     double viewpoint_grid_size_y_ = 0.0;
     double viewpoint_grid_size_z_ = 0.0;
 
-
     // =========================
     // viewpoint vis cloud cache (latest frame)
     // =========================
@@ -238,7 +237,6 @@ private:
     ros::Time latest_viewpoint_vis_stamp_;
     std::string latest_viewpoint_vis_frame_id_;
     std::atomic<bool> has_viewpoint_vis_{false};
-
 
     ros::Subscriber origin_sub_;
     mutable std::mutex origin_mutex_;
@@ -430,7 +428,6 @@ private:
 #include <unordered_set>
 #include <atomic>
 
-
 class Mapping
 {
 public:
@@ -621,7 +618,6 @@ private:
     double viewpoint_grid_size_y_ = 0.0;
     double viewpoint_grid_size_z_ = 0.0;
 
-
     // =========================
     // viewpoint vis cloud cache (latest frame)
     // =========================
@@ -633,7 +629,6 @@ private:
     ros::Time latest_viewpoint_vis_stamp_;
     std::string latest_viewpoint_vis_frame_id_;
     std::atomic<bool> has_viewpoint_vis_{false};
-
 
     ros::Subscriber origin_sub_;
     mutable std::mutex origin_mutex_;

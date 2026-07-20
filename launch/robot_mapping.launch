@@ -44,10 +44,8 @@
     <arg name="step_radius" default="0.6" />
     <arg name="min_normal_points" default="6" />
     <arg name="thread_count" default="4" />
-    <arg name="wheeled_model_path"
-        default="$(find obstacle_mapping)/test_map/vehicles/wheeled_car.csv" />
-    <arg name="tracked_model_path"
-        default="$(find obstacle_mapping)/test_map/vehicles/tracked_car.csv" />
+    <arg name="wheeled_model_path" default="$(find obstacle_mapping)/test_map/vehicles/wheeled_car.csv" />
+    <arg name="tracked_model_path" default="$(find obstacle_mapping)/test_map/vehicles/tracked_car.csv" />
     <arg name="robot_rows" default="9" />
     <arg name="robot_cols" default="11" />
     <arg name="robot_model_resolution" default="0.2" />
@@ -112,8 +110,7 @@
 
     <!-- Fine traversability diagnosis. The CSV is truncated at each launch. -->
     <arg name="enable_fine_debug_csv" default="false" />
-    <arg name="fine_debug_csv_path"
-        default="$(find obstacle_mapping)/$(arg ns)_fine_traversability_debug.csv" />
+    <arg name="fine_debug_csv_path" default="$(find obstacle_mapping)/$(arg ns)_fine_traversability_debug.csv" />
     <arg name="fine_debug_csv_append" default="false" />
     <arg name="fine_debug_csv_max_cycles" default="50" />
 
@@ -132,24 +129,20 @@
 
     <param name="vehicle_type" value="$(arg vehicle_type)" />
 
-    <node name="multi_robot_mapping_node" pkg="obstacle_mapping" type="multi_robot_mapping_node"
-        output="screen">
+    <node name="multi_robot_mapping_node" pkg="obstacle_mapping" type="multi_robot_mapping_node" output="screen">
         <!-- Topic and frame settings -->
         <param name="scan_topic" value="registered_scan_accum_5" />
+        <param name="odom_topic" value="state_estimation" />
         <param name="frame_id" value="$(arg frame_id)" />
         <param name="queue_size" value="$(arg queue_size)" />
 
         <!-- Vehicle and debug settings -->
         <param name="debug_mode" value="$(arg debug_mode)" />
 
-        <param name="publish_traversability_cloud"
-            value="$(arg publish_traversability_cloud)" />
-        <param name="traversability_cloud_topic"
-            value="$(arg traversability_cloud_topic)" />
-        <param name="terrain_map_cost_threshold"
-            value="$(arg terrain_map_cost_threshold)" />
-        <param name="unknown_height_offset"
-            value="$(arg unknown_height_offset)" />
+        <param name="publish_traversability_cloud" value="$(arg publish_traversability_cloud)" />
+        <param name="traversability_cloud_topic" value="$(arg traversability_cloud_topic)" />
+        <param name="terrain_map_cost_threshold" value="$(arg terrain_map_cost_threshold)" />
+        <param name="unknown_height_offset" value="$(arg unknown_height_offset)" />
 
         <!-- Sensor range parameters -->
         <param name="max_range" value="$(arg max_range)" />
@@ -175,8 +168,7 @@
         <param name="enable_startup_hole_fill" value="$(arg enable_startup_hole_fill)" />
         <param name="startup_hole_radius" value="$(arg startup_hole_radius)" />
         <param name="startup_hole_max_cells" value="$(arg startup_hole_max_cells)" />
-        <param name="startup_hole_min_boundary_cells"
-            value="$(arg startup_hole_min_boundary_cells)" />
+        <param name="startup_hole_min_boundary_cells" value="$(arg startup_hole_min_boundary_cells)" />
         <param name="startup_hole_max_attempts" value="$(arg startup_hole_max_attempts)" />
 
         <!-- Traversability thresholds -->
@@ -213,8 +205,7 @@
         <param name="wheeled_geo_roughness_weight" value="$(arg wheeled_geo_roughness_weight)" />
         <param name="wheeled_geo_step_weight" value="$(arg wheeled_geo_step_weight)" />
         <param name="wheeled_efficiency_flat_penalty" value="$(arg wheeled_efficiency_flat_penalty)" />
-        <param name="wheeled_efficiency_rough_penalty"
-            value="$(arg wheeled_efficiency_rough_penalty)" />
+        <param name="wheeled_efficiency_rough_penalty" value="$(arg wheeled_efficiency_rough_penalty)" />
         <param name="wheeled_efficiency_rough_bonus" value="$(arg wheeled_efficiency_rough_bonus)" />
 
         <param name="tracked_slope_limit_deg" value="$(arg tracked_slope_limit_deg)" />
@@ -224,8 +215,7 @@
         <param name="tracked_geo_roughness_weight" value="$(arg tracked_geo_roughness_weight)" />
         <param name="tracked_geo_step_weight" value="$(arg tracked_geo_step_weight)" />
         <param name="tracked_efficiency_flat_penalty" value="$(arg tracked_efficiency_flat_penalty)" />
-        <param name="tracked_efficiency_rough_penalty"
-            value="$(arg tracked_efficiency_rough_penalty)" />
+        <param name="tracked_efficiency_rough_penalty" value="$(arg tracked_efficiency_rough_penalty)" />
         <param name="tracked_efficiency_rough_bonus" value="$(arg tracked_efficiency_rough_bonus)" />
 
         <param name="step_robust_quantile" value="0.90" />
@@ -248,8 +238,7 @@
         <param name="enable_incremental_geom" value="$(arg enable_incremental_geom)" />
         <param name="enable_incremental_step" value="$(arg enable_incremental_step)" />
         <param name="enable_incremental_trav" value="$(arg enable_incremental_trav)" />
-        <param name="fine_height_change_threshold"
-            value="$(arg fine_height_change_threshold)" />
+        <param name="fine_height_change_threshold" value="$(arg fine_height_change_threshold)" />
         <param name="fine_recompute_radius" value="$(arg fine_recompute_radius)" />
 
         <!-- Fine-grained traversability range parameters -->
@@ -279,6 +268,5 @@
     </node>
 
     <!-- RViz visualization -->
-    <node name="rviz" pkg="rviz" type="rviz"
-        args="-d $(find obstacle_mapping)/rviz/show_multi_robot_$(arg ns).rviz" output="screen" />
+    <node name="rviz" pkg="rviz" type="rviz" args="-d $(find obstacle_mapping)/rviz/show_multi_robot_$(arg ns).rviz" output="screen" />
 </launch>

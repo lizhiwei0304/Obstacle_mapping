@@ -2,7 +2,7 @@
  * @Author: lee lizw_0304@163.com
  * @Date: 2026-07-15 21:21:31
  * @LastEditors: lee lizw_0304@163.com
- * @LastEditTime: 2026-07-20 20:09:56
+ * @LastEditTime: 2026-07-20 20:33:48
  * @FilePath: /src/obstacle_mapping/src/multi_robot_mapping.cpp
  * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
  */
@@ -911,6 +911,7 @@ Mapping::Mapping(ros::NodeHandle &nh, ros::NodeHandle &pnh)
       pnh_(pnh),
       current_cloud_(new pcl::PointCloud<pcl::PointXYZ>()),
       scan_topic_("registered_scan"),
+      odom_topic_("state_estimation"),
       frame_id_("map"),
       queue_size_(10),
       debug_mode_(false),
@@ -982,9 +983,8 @@ Mapping::Mapping(ros::NodeHandle &nh, ros::NodeHandle &pnh)
       nh_, scan_topic_, queue_size_);
 
   odom_filter_sub_ = std::make_shared<message_filters::Subscriber<nav_msgs::Odometry>>(
-      nh_, "state_estimation", queue_size_);
+      nh_, odom_topic_, queue_size_);
 
-      
   // Create approximate time synchronizer (allows small time differences)
   // Queue size of 10 means it will try to synchronize the last 10 messages from each topic
   sync_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(
@@ -1071,7 +1071,7 @@ Mapping::Mapping(ros::NodeHandle &nh, ros::NodeHandle &pnh)
   }
 
   ROS_INFO("Successfully subscribed to: %s (synchronized)", scan_topic_.c_str());
-  ROS_INFO("Successfully subscribed to: /laser_odom_init (synchronized)");
+  ROS_INFO("Successfully subscribed to: %s (synchronized)", odom_topic_.c_str());
   ROS_INFO("Publishing grid map on topic: trav_map");
 
   // Start processing thread for asynchronous point cloud processing
@@ -1082,6 +1082,7 @@ Mapping::Mapping(ros::NodeHandle &nh, ros::NodeHandle &pnh)
 
   ROS_INFO("Mapping initialization complete");
   ROS_INFO("Subscribed to topic: %s", scan_topic_.c_str());
+  ROS_INFO("Subscribed to topic: %s", odom_topic_.c_str());
   ROS_INFO("Grid map will be published after each processed synchronized message pair");
 }
 
@@ -1116,6 +1117,7 @@ void Mapping::loadParameters()
 
   // Load topic settings
   pnh_.param<std::string>("scan_topic", scan_topic_, "registered_scan");
+  pnh_.param<std::string>("odom_topic", odom_topic_, "state_estimation");
   pnh_.param<std::string>("origin_topic", origin_topic_, "tare_planner_node/viewpoint_origin");
   pnh_.param<std::string>("viewpoint_vis_topic", viewpoint_vis_topic_, "viewpoint_vis_cloud");
   pnh_.param<std::string>("frame_id", frame_id_, "map");
@@ -1238,6 +1240,7 @@ void Mapping::loadParameters()
   // Log loaded parameters
   ROS_INFO("Parameters loaded:");
   ROS_INFO("  - scan_topic: %s", scan_topic_.c_str());
+  ROS_INFO("  - odom_topic: %s", odom_topic_.c_str());
   ROS_INFO("  - frame_id: %s", frame_id_.c_str());
   ROS_INFO("  - queue_size: %d", queue_size_);
   ROS_INFO("  - debug_mode: %s", debug_mode_ ? "true" : "false");
