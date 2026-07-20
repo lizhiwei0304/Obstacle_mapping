@@ -2,7 +2,7 @@
  * @Author: lee lizw_0304@163.com
  * @Date: 2026-07-15 21:21:31
  * @LastEditors: lee lizw_0304@163.com
- * @LastEditTime: 2026-07-20 16:01:16
+ * @LastEditTime: 2026-07-20 16:56:49
  * @FilePath: /src/obstacle_mapping/src/multi_robot_mapping.cpp
  * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
  */
@@ -79,6 +79,434 @@ namespace
   // terrain as free is less conservative than omitting it.
   bool terrain_map_unknown_as_traversable = true;
   ros::Publisher local_trav_cloud_publisher;
+
+  /**
+   * Geometry shared with tare_planner's ViewPointManager.
+   *
+   * The mapping node intentionally does not subscribe to viewpoint_origin.
+   * Instead, it loads the same parameters and applies the same initialization
+   * and rollover equations to the odometry sample synchronized with the scan.
+   */
+  struct ViewpointGridConfig
+  {
+    int number_x = 0;
+    int number_y = 0;
+    int number_z = 0;
+    double resolution_x = 0.0;
+    double resolution_y = 0.0;
+    double resolution_z = 0.0;
+    int rollover_cells_x = 0;
+    int rollover_cells_y = 0;
+    int grid_world_x_num = 0;
+    int grid_world_y_num = 0;
+    int nearby_grid_num = 0;
+    double grid_world_cell_size = 0.0;
+  };
+
+  struct ViewpointGridSnapshot
+  {
+    ViewpointGridConfig config;
+    Eigen::Vector3d origin = Eigen::Vector3d::Zero();
+    Eigen::Vector3d robot_position = Eigen::Vector3d::Zero();
+    ros::Time stamp;
+    std::size_t generation = 0;
+  };
+
+  static inline double QuantizeViewpointOrigin(double value)
+  {
+    // Keep bit-for-bit the same decimal-grid rule as ViewPointManager::Quantize01.
+    return static_cast<double>(std::llround(value * 10.0)) / 10.0;
+  }
+
+  class ViewpointGridAlignment
+  {
+  public:
+    void configure(const ViewpointGridConfig &config)
+    {
+      if (config.number_x <= 0 || config.number_y <= 0 ||
+          config.resolution_x <= 0.0 || config.resolution_y <= 0.0 ||
+          config.rollover_cells_x <= 0 || config.rollover_cells_y <= 0 ||
+          config.grid_world_x_num <= 0 || config.grid_world_y_num <= 0 ||
+          config.nearby_grid_num <= 0 || config.grid_world_cell_size <= 0.0)
+      {
+        throw std::runtime_error("Invalid viewpoint/grid_world geometry parameters");
+      }
+
+      if (std::fabs(config.resolution_x - config.resolution_y) > 1e-9)
+      {
+        throw std::runtime_error(
+            "grid_map requires viewpoint resolution_x == resolution_y");
+      }
+
+      const double rollover_distance_y =
+          static_cast<double>(config.rollover_cells_y) * config.resolution_y;
+      if (std::fabs(rollover_distance_y - config.grid_world_cell_size) > 1e-9)
+      {
+        throw std::runtime_error(
+            "Viewpoint X/Y physical rollover distances must equal GridWorld cell size");
+      }
+
+      std::lock_guard<std::mutex> lock(mutex_);
+      config_ = config;
+      configured_ = true;
+      initialized_ = false;
+      generation_ = 0;
+      origin_.setZero();
+      robot_position_.setZero();
+      stamp_ = ros::Time(0);
+    }
+
+    bool update(const Eigen::Vector3d &robot_position, const ros::Time &stamp)
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!configured_)
+      {
+        return false;
+      }
+
+      robot_position_ = robot_position;
+      stamp_ = stamp;
+
+      bool rolled = false;
+      if (!initialized_)
+      {
+        initializeOrigin(robot_position);
+        initialized_ = true;
+        rolled = true;
+
+        ROS_INFO("Inferred initial viewpoint origin: [%.3f, %.3f], robot=[%.3f, %.3f]",
+                 origin_.x(), origin_.y(), robot_position.x(), robot_position.y());
+      }
+
+      const Eigen::Vector2d old_origin(origin_.x(), origin_.y());
+      updateAxis(robot_position.x(), config_.number_x,
+                 config_.resolution_x, config_.rollover_cells_x, origin_.x());
+      updateAxis(robot_position.y(), config_.number_y,
+                 config_.resolution_y, config_.rollover_cells_y, origin_.y());
+
+      if (std::fabs(origin_.x() - old_origin.x()) > 1e-9 ||
+          std::fabs(origin_.y() - old_origin.y()) > 1e-9)
+      {
+        rolled = true;
+        ROS_INFO("Inferred viewpoint rollover: origin [%.3f, %.3f] -> [%.3f, %.3f], robot=[%.3f, %.3f]",
+                 old_origin.x(), old_origin.y(), origin_.x(), origin_.y(),
+                 robot_position.x(), robot_position.y());
+      }
+
+      if (rolled)
+      {
+        ++generation_;
+      }
+      return rolled;
+    }
+
+    bool snapshot(ViewpointGridSnapshot &snapshot) const
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (!configured_ || !initialized_)
+      {
+        return false;
+      }
+
+      snapshot.config = config_;
+      snapshot.origin = origin_;
+      snapshot.robot_position = robot_position_;
+      snapshot.stamp = stamp_;
+      snapshot.generation = generation_;
+      return true;
+    }
+
+  private:
+    void initializeOrigin(const Eigen::Vector3d &robot_position)
+    {
+      // Same GridWorld origin used in GridWorld::UpdateRobotPosition().
+      const double grid_origin_x =
+          -config_.grid_world_cell_size * config_.grid_world_x_num / 2.0;
+      const double grid_origin_y =
+          -config_.grid_world_cell_size * config_.grid_world_y_num / 2.0;
+
+      const int robot_sub_x = static_cast<int>(
+          std::floor((robot_position.x() - grid_origin_x) /
+                     config_.grid_world_cell_size));
+      const int robot_sub_y = static_cast<int>(
+          std::floor((robot_position.y() - grid_origin_y) /
+                     config_.grid_world_cell_size));
+
+      const int neighbor_half = config_.nearby_grid_num / 2;
+      int start_sub_x = robot_sub_x - neighbor_half;
+      int start_sub_y = robot_sub_y - neighbor_half;
+
+      // Match GridWorld::UpdateNeighborCells(): clamp the start cell itself.
+      start_sub_x = std::max(
+          0, std::min(start_sub_x, config_.grid_world_x_num - 1));
+      start_sub_y = std::max(
+          0, std::min(start_sub_y, config_.grid_world_y_num - 1));
+
+      origin_.x() = QuantizeViewpointOrigin(
+          grid_origin_x + start_sub_x * config_.grid_world_cell_size);
+      origin_.y() = QuantizeViewpointOrigin(
+          grid_origin_y + start_sub_y * config_.grid_world_cell_size);
+      origin_.z() = 0.0; // ViewPointManager is configured as dimension_=2.
+    }
+
+    static void updateAxis(double robot_coordinate,
+                           int number,
+                           double resolution,
+                           int rollover_cells,
+                           double &origin_coordinate)
+    {
+      // Exact 2-D counterpart of ViewPointManager::UpdateRobotPosition().
+      const double diff = robot_coordinate - origin_coordinate;
+      const double rollover_distance =
+          static_cast<double>(rollover_cells) * resolution;
+      const int robot_grid_sub =
+          diff > 0.0 ? static_cast<int>(diff / rollover_distance) : -1;
+      const int target_grid_sub = (number / rollover_cells) / 2;
+      const int sub_diff = target_grid_sub - robot_grid_sub;
+      const int rollover_step = rollover_cells * sub_diff;
+
+      origin_coordinate -= static_cast<double>(rollover_step) * resolution;
+      origin_coordinate = QuantizeViewpointOrigin(origin_coordinate);
+    }
+
+    mutable std::mutex mutex_;
+    ViewpointGridConfig config_;
+    bool configured_ = false;
+    bool initialized_ = false;
+    Eigen::Vector3d origin_ = Eigen::Vector3d::Zero();
+    Eigen::Vector3d robot_position_ = Eigen::Vector3d::Zero();
+    ros::Time stamp_;
+    std::size_t generation_ = 0;
+  };
+
+  ViewpointGridAlignment &viewpointGridAlignment()
+  {
+    static ViewpointGridAlignment alignment;
+    return alignment;
+  }
+
+  void ConfigureViewpointGridAlignment(ros::NodeHandle &nh)
+  {
+    ViewpointGridConfig config;
+    std::string planner_prefix;
+    std::string viewpoint_prefix;
+
+    // 与参考代码加载 viewpoint_manager 参数的方式保持一致：
+    // 由当前机器人命名空间拼出 tare_planner_node 的私有参数路径，
+    // 并在规划节点完成参数初始化之前以 10 Hz 持续等待。
+    ros::Rate rate(10);
+    bool loaded = false;
+    while (ros::ok())
+    {
+      const std::string ns = ros::this_node::getNamespace();
+      planner_prefix = ns + "/tare_planner_node/";
+      viewpoint_prefix = planner_prefix + "viewpoint_manager/";
+
+      loaded = nh.getParam(viewpoint_prefix + "number_x", config.number_x) &&
+               nh.getParam(viewpoint_prefix + "number_y", config.number_y) &&
+               nh.getParam(viewpoint_prefix + "number_z", config.number_z) &&
+               nh.getParam(viewpoint_prefix + "resolution_x", config.resolution_x) &&
+               nh.getParam(viewpoint_prefix + "resolution_y", config.resolution_y) &&
+               nh.getParam(viewpoint_prefix + "resolution_z", config.resolution_z);
+
+      if (loaded)
+        break;
+
+      ROS_WARN_THROTTLE(
+          2.0,
+          "Waiting for viewpoint_manager params... "
+          "(number_x/y/z, resolution_x/y/z)");
+      rate.sleep();
+    }
+
+    // 与参考代码一致，ros::ok() 变 false 后不使用未初始化参数。
+    if (!ros::ok())
+      return;
+
+    // 与 GridWorld::ReadParameters() 相同：这些值从 ROS 参数服务器
+    // 读取，并保留 GridWorld 源码中的缺省值 121、121、5。
+    nh.param<int>(planner_prefix + "kGridWorldXNum",
+                  config.grid_world_x_num, 121);
+    nh.param<int>(planner_prefix + "kGridWorldYNum",
+                  config.grid_world_y_num, 121);
+    nh.param<int>(planner_prefix + "kGridWorldNearbyGridNum",
+                  config.nearby_grid_num, 5);
+
+    // These two values are derived, not ROS parameters, in the original
+    // ViewPointManager::ReadParameters() and GridWorld::ReadParameters().
+    config.rollover_cells_x = config.number_x / 5;
+    config.rollover_cells_y = config.number_y / 5;
+    // Same formula as GridWorld::ReadParameters().
+    config.grid_world_cell_size =
+        static_cast<double>(config.number_x) * config.resolution_x / 5.0;
+
+    viewpointGridAlignment().configure(config);
+
+    ROS_INFO("Viewpoint-aligned trav_map: params=%s, cells=%dx%d, resolution=%.3f, size=%.3fx%.3f m, rollover=%dx%d cells (%.3fx%.3f m), GridWorld=%dx%d nearby=%d",
+             viewpoint_prefix.c_str(), config.number_x, config.number_y,
+             config.resolution_x,
+             config.number_x * config.resolution_x,
+             config.number_y * config.resolution_y,
+             config.rollover_cells_x, config.rollover_cells_y,
+             config.rollover_cells_x * config.resolution_x,
+             config.rollover_cells_y * config.resolution_y,
+             config.grid_world_x_num, config.grid_world_y_num,
+             config.nearby_grid_num);
+  }
+
+  enum class ViewpointPoolType
+  {
+    kMax,
+    kMean
+  };
+
+  struct ViewpointLayerPolicy
+  {
+    const char *name;
+    ViewpointPoolType pool_type;
+  };
+
+  /**
+   * Downsample the persistent high-resolution map into a GridMap whose lower
+   * corner, cell count and resolution are identical to ViewPointManager.
+   * The caller owns the height_map read lock.
+   */
+  bool BuildViewpointAlignedGridMap(const grid_map::GridMap &height_map,
+                                    const std::string &fallback_frame_id,
+                                    grid_map_msgs::GridMap &message)
+  {
+    ViewpointGridSnapshot snapshot;
+    if (!viewpointGridAlignment().snapshot(snapshot))
+    {
+      ROS_WARN_THROTTLE(
+          2.0, "Viewpoint geometry has no synchronized pose yet; skip aligned trav_map.");
+      return false;
+    }
+
+    const ViewpointGridConfig &config = snapshot.config;
+    const double output_resolution = config.resolution_x;
+    const double size_x = static_cast<double>(config.number_x) * config.resolution_x;
+    const double size_y = static_cast<double>(config.number_y) * config.resolution_y;
+    const grid_map::Position output_center(snapshot.origin.x() + 0.5 * size_x,
+                                           snapshot.origin.y() + 0.5 * size_y);
+
+    grid_map::GridMap output_map;
+    output_map.setFrameId(height_map.getFrameId().empty() ? fallback_frame_id : height_map.getFrameId());
+    output_map.setTimestamp(snapshot.stamp.toNSec());
+    output_map.setGeometry(grid_map::Length(size_x, size_y),
+                           output_resolution, output_center);
+
+    const grid_map::Size output_size = output_map.getSize();
+    if (output_size(0) != config.number_x ||
+        output_size(1) != config.number_y)
+    {
+      ROS_ERROR_THROTTLE(2.0,
+                         "Viewpoint-aligned grid size mismatch: expected=%dx%d actual=%dx%d",
+                         config.number_x, config.number_y, output_size(0), output_size(1));
+      return false;
+    }
+
+    static const std::array<ViewpointLayerPolicy, 14> policies = {{
+        {"elevation", ViewpointPoolType::kMean},
+        {"elevation_BGK", ViewpointPoolType::kMean},
+        {"slope", ViewpointPoolType::kMean},
+        {"roughness", ViewpointPoolType::kMean},
+        {"step", ViewpointPoolType::kMax},
+        {"slope_deg", ViewpointPoolType::kMean},
+        {"roughness_raw", ViewpointPoolType::kMean},
+        {"step_height", ViewpointPoolType::kMax},
+        {"traversability", ViewpointPoolType::kMax},
+        {"traversability_coarse_wheeled", ViewpointPoolType::kMax},
+        {"traversability_coarse_tracked", ViewpointPoolType::kMax},
+        {"traversability_fine_wheeled", ViewpointPoolType::kMax},
+        {"traversability_fine_tracked", ViewpointPoolType::kMax},
+        {"critical", ViewpointPoolType::kMax},
+    }};
+
+    std::vector<ViewpointLayerPolicy> used_policies;
+    used_policies.reserve(policies.size());
+    for (const auto &policy : policies)
+    {
+      if (height_map.exists(policy.name))
+      {
+        output_map.add(policy.name, std::numeric_limits<float>::quiet_NaN());
+
+        used_policies.push_back(policy);
+      }
+    }
+
+    if (used_policies.empty())
+    {
+      ROS_WARN_THROTTLE(2.0, "No traversability-related layer exists for aligned trav_map.");
+      return false;
+    }
+
+    const grid_map::Length source_window(output_resolution,
+                                         output_resolution);
+    std::size_t sampled_cells = 0;
+
+    for (grid_map::GridMapIterator output_it(output_map);
+         !output_it.isPastEnd(); ++output_it)
+    {
+      const grid_map::Index output_index(*output_it);
+      grid_map::Position cell_center;
+      if (!output_map.getPosition(output_index, cell_center) ||
+          !height_map.isInside(cell_center))
+      {
+        continue;
+      }
+
+      bool submap_ok = false;
+      grid_map::SubmapGeometry source_geometry(
+          height_map, cell_center, source_window, submap_ok);
+      if (!submap_ok)
+      {
+        continue;
+      }
+
+      for (const auto &policy : used_policies)
+      {
+        double sum = 0.0;
+        std::size_t valid_count = 0;
+        float maximum = -std::numeric_limits<float>::infinity();
+
+        for (grid_map::SubmapIterator source_it(source_geometry);
+             !source_it.isPastEnd(); ++source_it)
+        {
+          const float value = height_map.at(policy.name, *source_it);
+          if (!std::isfinite(value))
+          {
+            continue;
+          }
+
+          sum += static_cast<double>(value);
+          maximum = std::max(maximum, value);
+          ++valid_count;
+        }
+
+        if (valid_count == 0)
+        {
+          continue;
+        }
+
+        output_map.at(policy.name, output_index) =
+            policy.pool_type == ViewpointPoolType::kMax
+                ? maximum
+                : static_cast<float>(sum / static_cast<double>(valid_count));
+      }
+
+      ++sampled_cells;
+    }
+
+    grid_map::GridMapRosConverter::toMessage(output_map, message);
+    ROS_INFO_STREAM_THROTTLE(1.0, "Published viewpoint-aligned trav_map: origin=["
+                                      << snapshot.origin.x() << ", " << snapshot.origin.y()
+                                      << "], size=" << config.number_x << "x" << config.number_y
+                                      << ", resolution=" << output_resolution
+                                      << ", generation=" << snapshot.generation
+                                      << ", sampled_cells=" << sampled_cells);
+    return true;
+  }
 
   // Parameters shared by step-height extraction and platform-specific
   // coarse traversability.  Keeping them in this translation unit avoids
@@ -536,6 +964,11 @@ Mapping::Mapping(ros::NodeHandle &nh, ros::NodeHandle &pnh)
   ROS_INFO("Mapping::init() - Initializing mapping node");
 
   loadParameters();
+
+  // Load the exact ViewPointManager/GridWorld geometry before any scan is
+  // processed.  The mapping node then infers the same origin from synchronized
+  // odometry and does not wait for viewpoint_origin.
+  ConfigureViewpointGridAlignment(nh_);
 
   loadRobotModels();
 
@@ -1178,6 +1611,11 @@ void Mapping::processingThreadFunc()
       // [B2] 真正处理点云（重计算：滤波/配准/栅格更新等）
       // ------------------------------------------
       processPointCloud(task.cloud, vehicle_position);
+
+      // Use the pose carried by this exact processing task.  This reproduces
+      // ViewPointManager's initial origin and rollover before the map produced
+      // from the same scan is published, without waiting for viewpoint_origin.
+      viewpointGridAlignment().update(task.position, task.timestamp);
 
       // ------------------------------------------
       // [B3] 处理完立刻发布一次栅格地图
@@ -5787,6 +6225,14 @@ bool Mapping::buildGridMapMessage(grid_map_msgs::GridMap &message)
   // GridMapRosConverter 会把 local_map 的 metadata（尺寸、分辨率、坐标系）
   // 和各 layer 的 matrix 数据打包成 grid_map_msgs::GridMap 消息
   grid_map::GridMapRosConverter::toMessage(local_map, message);
+
+  // Keep all existing mapping and /terrain_map publication above unchanged.
+  // Replace only the outgoing trav_map payload with the ViewPointManager-
+  // aligned, one-cell-per-XY-viewpoint resampling of the same height_map_.
+  if (!BuildViewpointAlignedGridMap(height_map_, frame_id_, message))
+  {
+    return false;
+  }
 
   return true;
 }
