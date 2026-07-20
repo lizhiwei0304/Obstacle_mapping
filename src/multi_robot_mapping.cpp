@@ -2,7 +2,7 @@
  * @Author: lee lizw_0304@163.com
  * @Date: 2026-07-15 21:21:31
  * @LastEditors: lee lizw_0304@163.com
- * @LastEditTime: 2026-07-20 10:47:52
+ * @LastEditTime: 2026-07-20 14:08:57
  * @FilePath: /src/obstacle_mapping/src/multi_robot_mapping.cpp
  * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
  */
@@ -803,11 +803,11 @@ void Mapping::loadRobotModels()
 
   if (!wheeled_model_loaded_)
   {
-    ROS_WARN("Wheeled vehicle model unavailable; traversability_fine_wheeled layer will be left unchanged");
+    ROS_WARN("Wheeled vehicle model unavailable; wheeled coarse/fine traversability layers will be left unchanged");
   }
   if (!tracked_model_loaded_)
   {
-    ROS_WARN("Tracked vehicle model unavailable; traversability_fine_tracked layer will be left unchanged");
+    ROS_WARN("Tracked vehicle model unavailable; tracked coarse/fine traversability layers will be left unchanged");
   }
 }
 
@@ -1464,30 +1464,32 @@ void Mapping::initGridMap()
   height_map_.setGeometry(map_length, map_resolution_, grid_map::Position(0.0, 0.0));
 
   // Add layers
-  height_map_.add("elevation");                   // Height of observed points
-  height_map_.add("elevation_BGK");               // Interpolated height using BGK
-  height_map_.add("variance");                    // Height variance
-  height_map_.add("min_elevation");               // Minimum elevation in cell
-  height_map_.add("max_elevation");               // Maximum elevation in cell
-  height_map_.add("n_points");                    // Number of points in cell
-  height_map_.add("normal_x");                    // Surface normal X component
-  height_map_.add("normal_y");                    // Surface normal Y component
-  height_map_.add("normal_z");                    // Surface normal Z component
-  height_map_.add("slope");                       // Slope feature
-  height_map_.add("roughness");                   // Roughness feature
-  height_map_.add("step");                        // Step feature
-  height_map_.add("slope_deg");                   // Raw slope angle in degrees
-  height_map_.add("roughness_raw");               // Raw PCA roughness ratio
-  height_map_.add("step_height");                 // Raw local step height in meters
-  height_map_.add("traversability");              // Traversability cost
-  height_map_.add("traversability_fine_wheeled"); // Fine-grained traversability for wheeled car
-  height_map_.add("traversability_fine_tracked"); // Fine-grained traversability for tracked car
-  height_map_.add("critical");                    // Flag: cells evaluated by fine-grained mapping
-  height_map_.add("interpolated");                // Flag: whether this cell has been interpolated by BGK
-  height_map_.add("incremental_geom_computed");   // Flag: whether geometric mapping has been computed incrementally
-  height_map_.add("incremental_step_computed");   // Flag: whether step mapping has been computed incrementally
-  height_map_.add("incremental_trav_computed");   // Flag: whether traversability mapping has been computed incrementally
-  height_map_.add("incremental_fine_computed");   // Flag: whether fine traversability is up to date
+  height_map_.add("elevation");                     // Height of observed points
+  height_map_.add("elevation_BGK");                 // Interpolated height using BGK
+  height_map_.add("variance");                      // Height variance
+  height_map_.add("min_elevation");                 // Minimum elevation in cell
+  height_map_.add("max_elevation");                 // Maximum elevation in cell
+  height_map_.add("n_points");                      // Number of points in cell
+  height_map_.add("normal_x");                      // Surface normal X component
+  height_map_.add("normal_y");                      // Surface normal Y component
+  height_map_.add("normal_z");                      // Surface normal Z component
+  height_map_.add("slope");                         // Slope feature
+  height_map_.add("roughness");                     // Roughness feature
+  height_map_.add("step");                          // Step feature
+  height_map_.add("slope_deg");                     // Raw slope angle in degrees
+  height_map_.add("roughness_raw");                 // Raw PCA roughness ratio
+  height_map_.add("step_height");                   // Raw local step height in meters
+  height_map_.add("traversability");                // Traversability cost
+  height_map_.add("traversability_coarse_wheeled"); // Platform-specific coarse traversability for wheeled car
+  height_map_.add("traversability_coarse_tracked"); // Platform-specific coarse traversability for tracked car
+  height_map_.add("traversability_fine_wheeled");   // Fine-grained traversability for wheeled car
+  height_map_.add("traversability_fine_tracked");   // Fine-grained traversability for tracked car
+  height_map_.add("critical");                      // Flag: cells evaluated by fine-grained mapping
+  height_map_.add("interpolated");                  // Flag: whether this cell has been interpolated by BGK
+  height_map_.add("incremental_geom_computed");     // Flag: whether geometric mapping has been computed incrementally
+  height_map_.add("incremental_step_computed");     // Flag: whether step mapping has been computed incrementally
+  height_map_.add("incremental_trav_computed");     // Flag: whether traversability mapping has been computed incrementally
+  height_map_.add("incremental_fine_computed");     // Flag: whether fine traversability is up to date
 
   // Initialize n_points layer to 0
   height_map_["n_points"].setConstant(0);
@@ -2689,7 +2691,8 @@ void Mapping::finegrained_traversability_mapping()
   {
     int id = 0;
     const HeightGrid *model = nullptr;
-    grid_map::Matrix *layer = nullptr;
+    grid_map::Matrix *coarse_layer = nullptr;
+    grid_map::Matrix *fine_layer = nullptr;
     const VehicleCapability *capability = nullptr;
     std::string name;
     int nominal_contact_points = 1;
@@ -2704,7 +2707,8 @@ void Mapping::finegrained_traversability_mapping()
   auto registerVehicle = [&](int id,
                              const HeightGrid &model,
                              bool loaded,
-                             const std::string &layer_name,
+                             const std::string &coarse_layer_name,
+                             const std::string &fine_layer_name,
                              const std::string &name,
                              const VehicleCapability &capability)
   {
@@ -2712,17 +2716,20 @@ void Mapping::finegrained_traversability_mapping()
     {
       return;
     }
-    if (!height_map_.exists(layer_name))
+    if (!height_map_.exists(coarse_layer_name) ||
+        !height_map_.exists(fine_layer_name))
     {
-      ROS_WARN("Grid map layer %s is missing; skipping %s",
-               layer_name.c_str(), name.c_str());
+      ROS_WARN("Grid map layer is missing for %s (coarse=%s, fine=%s); skipping this vehicle",
+               name.c_str(), coarse_layer_name.c_str(),
+               fine_layer_name.c_str());
       return;
     }
 
     VehicleEvalContext context;
     context.id = id;
     context.model = &model;
-    context.layer = &height_map_[layer_name];
+    context.coarse_layer = &height_map_[coarse_layer_name];
+    context.fine_layer = &height_map_[fine_layer_name];
     context.capability = &capability;
     context.name = name;
 
@@ -2760,9 +2767,11 @@ void Mapping::finegrained_traversability_mapping()
   };
 
   registerVehicle(1, wheeled_model_, wheeled_model_loaded_,
+                  "traversability_coarse_wheeled",
                   "traversability_fine_wheeled", "wheeled car",
                   wheeled_capability);
   registerVehicle(2, tracked_model_, tracked_model_loaded_,
+                  "traversability_coarse_tracked",
                   "traversability_fine_tracked", "tracked car",
                   tracked_capability);
 
@@ -3076,7 +3085,13 @@ void Mapping::finegrained_traversability_mapping()
           inBand(cell_metrics.step_ratio,
                  fine_step_min, fine_step_max);
 
-      (*(vehicles[vehicle_index].layer))(idx(0), idx(1)) =
+      // Preserve the platform-specific coarse result before the expensive
+      // pose/support/collision verification.  The fine layer starts from the
+      // same value and may be overwritten below, while the coarse layer must
+      // remain unchanged for comparison and downstream cost selection.
+      (*(vehicles[vehicle_index].coarse_layer))(idx(0), idx(1)) =
+          static_cast<float>(cell_metrics.base_cost);
+      (*(vehicles[vehicle_index].fine_layer))(idx(0), idx(1)) =
           static_cast<float>(cell_metrics.base_cost);
       any_platform_critical =
           any_platform_critical || cell_metrics.critical;
@@ -3232,23 +3247,28 @@ void Mapping::finegrained_traversability_mapping()
       if (has_success)
       {
         ++vehicle.count_success;
-        const double heading_cost = 1.0 - clamp01(
-                                              static_cast<double>(success_headings) /
-                                              static_cast<double>(fine_heading_samples));
-        const double pose_cost = clamp01(
-            best_partial_pose_cost +
-            pose_heading_weight * heading_cost);
-        const double traversability_risk =
-            std::max(cell_metrics.geo_cost, pose_cost);
-        const double adjusted_risk = clamp01(
-            traversability_risk +
-            cell_metrics.efficiency_adjustment);
+
+        const double heading_cost =
+            1.0 -
+            clamp01(
+                static_cast<double>(success_headings) /
+                static_cast<double>(fine_heading_samples));
+
+        const double pose_cost =
+            clamp01(
+                best_partial_pose_cost +
+                pose_heading_weight * heading_cost);
+
+        // 精细姿态校核成功后覆盖车型粗略代价。
+        // 但明确超过车辆坡度、粗糙度或台阶能力时仍保持不可通行。
         const double final_cost =
             cell_metrics.geo_cost >= 1.0
                 ? 1.0
-                : std::max(cell_metrics.geo_cost, adjusted_risk);
+                : clamp01(
+                      pose_cost +
+                      cell_metrics.efficiency_adjustment);
 
-        (*(vehicle.layer))(idx(0), idx(1)) =
+        (*(vehicle.fine_layer))(idx(0), idx(1)) =
             static_cast<float>(final_cost);
 
         writeCellRecord(
@@ -3265,7 +3285,7 @@ void Mapping::finegrained_traversability_mapping()
       else if (collision_headings == fine_heading_samples)
       {
         ++vehicle.count_collision;
-        (*(vehicle.layer))(idx(0), idx(1)) = 1.0f;
+        (*(vehicle.fine_layer))(idx(0), idx(1)) = 1.0f;
         const double support_ratio = clamp01(
             static_cast<double>(diagnostic_contacts) /
             static_cast<double>(vehicle.nominal_contact_points));
@@ -3285,7 +3305,7 @@ void Mapping::finegrained_traversability_mapping()
       else if (has_unstable)
       {
         ++vehicle.count_failure;
-        (*(vehicle.layer))(idx(0), idx(1)) = 1.0f;
+        (*(vehicle.fine_layer))(idx(0), idx(1)) = 1.0f;
         const double support_ratio = clamp01(
             static_cast<double>(diagnostic_contacts) /
             static_cast<double>(vehicle.nominal_contact_points));
@@ -3305,7 +3325,7 @@ void Mapping::finegrained_traversability_mapping()
       else
       {
         ++vehicle.count_failure;
-        (*(vehicle.layer))(idx(0), idx(1)) =
+        (*(vehicle.fine_layer))(idx(0), idx(1)) =
             static_cast<float>(cell_metrics.base_cost);
         const double support_ratio = clamp01(
             static_cast<double>(diagnostic_contacts) /
@@ -5420,6 +5440,8 @@ void Mapping::publishGridMap()
                 "roughness_raw",
                 "step_height",
                 "traversability",
+                "traversability_coarse_wheeled",
+                "traversability_coarse_tracked",
                 "traversability_fine_wheeled",
                 "traversability_fine_tracked",
                 "critical"};
@@ -5505,7 +5527,7 @@ bool Mapping::buildGridMapMessage(grid_map_msgs::GridMap &message)
   // avoids a second getSubmap() and keeps the additional publication cheap.
   if (publish_local_trav_cloud)
   {
-    local_trav_layer = "traversability";
+    local_trav_layer = "traversability_coarse_wheeled";
     if (!local_map.exists(local_trav_layer))
     {
       ROS_WARN_THROTTLE(
@@ -5620,6 +5642,8 @@ bool Mapping::buildGridMapMessage(grid_map_msgs::GridMap &message)
       "roughness_raw",
       "step_height",
       "traversability",
+      "traversability_coarse_wheeled",
+      "traversability_coarse_tracked",
       "traversability_fine_wheeled",
       "traversability_fine_tracked",
       "critical"};
@@ -5775,6 +5799,8 @@ bool Mapping::buildGridMapFromViewpointCloud(grid_map_msgs::GridMap &message)
       {"roughness", PoolType::MEAN},
       {"step", PoolType::MAX},
       {"traversability", PoolType::MAX},
+      {"traversability_coarse_wheeled", PoolType::MAX},
+      {"traversability_coarse_tracked", PoolType::MAX},
       {"traversability_fine_wheeled", PoolType::MAX},
       {"traversability_fine_tracked", PoolType::MAX},
       {"critical", PoolType::MAX},

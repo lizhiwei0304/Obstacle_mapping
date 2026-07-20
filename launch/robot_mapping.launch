@@ -2,7 +2,7 @@
 <!-- Complete launch configuration with package-local traversability CSV output. -->
 <launch>
     <arg name="ns" default="vehicle0" />
-    
+
     <!-- Platform type selects the corresponding fine traversability layer. -->
     <!-- <arg name="vehicle_type" default="wheeled" /> -->
     <arg name="vehicle_type" default="wheeled" />
@@ -22,11 +22,11 @@
     <arg name="min_range" default="0.1" />
     <arg name="min_z" default="-3.0" />
     <arg name="max_z" default="1.3" />
-    <arg name="map_resolution" default="0.5" />
+    <arg name="map_resolution" default="0.3" />
     <arg name="map_length_x" default="1000.0" />
     <arg name="map_length_y" default="1000.0" />
-    <arg name="local_map_size_x" default="20.0" />
-    <arg name="local_map_size_y" default="20.0" />
+    <arg name="local_map_size_x" default="7.5" />
+    <arg name="local_map_size_y" default="7.5" />
     <arg name="bgk_kernel_size" default="0.6" />
 
     <!-- Fill only a small closed unknown component at the initial pose. -->
@@ -60,17 +60,12 @@
     <arg name="fine_heading_samples" default="4" />
 
     <!-- Wheeled-platform capability and geometry-cost parameters. -->
-    <arg name="wheeled_slope_limit_deg" default="25.0" />
+    <arg name="wheeled_slope_limit_deg" default="30.0" />
     <arg name="wheeled_roughness_limit" default="0.04" />
-    <arg name="wheeled_step_limit_m" default="0.18" />
-    <arg name="wheeled_roll_limit_deg" default="25.0" />
-    <arg name="wheeled_pitch_limit_deg" default="30.0" />
-    <arg name="wheeled_max_pose_tilt_deg" default="40.0" />
-    <arg name="wheeled_touch_gap_threshold" default="0.05" />
-    <arg name="wheeled_collision_clearance" default="0.10" />
-    <arg name="wheeled_geo_slope_weight" default="0.35" />
-    <arg name="wheeled_geo_roughness_weight" default="0.25" />
-    <arg name="wheeled_geo_step_weight" default="0.40" />
+    <arg name="wheeled_step_limit_m" default="0.30" />
+    <arg name="wheeled_geo_slope_weight" default="0.33" />
+    <arg name="wheeled_geo_roughness_weight" default="0.33" />
+    <arg name="wheeled_geo_step_weight" default="0.33" />
     <arg name="wheeled_efficiency_flat_penalty" default="0.00" />
     <arg name="wheeled_efficiency_rough_penalty" default="0.15" />
     <arg name="wheeled_efficiency_rough_bonus" default="0.00" />
@@ -78,15 +73,10 @@
     <!-- Tracked-platform capability and geometry-cost parameters. -->
     <arg name="tracked_slope_limit_deg" default="35.0" />
     <arg name="tracked_roughness_limit" default="0.08" />
-    <arg name="tracked_step_limit_m" default="0.30" />
-    <arg name="tracked_roll_limit_deg" default="30.0" />
-    <arg name="tracked_pitch_limit_deg" default="40.0" />
-    <arg name="tracked_max_pose_tilt_deg" default="45.0" />
-    <arg name="tracked_touch_gap_threshold" default="0.05" />
-    <arg name="tracked_collision_clearance" default="0.08" />
-    <arg name="tracked_geo_slope_weight" default="0.30" />
-    <arg name="tracked_geo_roughness_weight" default="0.25" />
-    <arg name="tracked_geo_step_weight" default="0.45" />
+    <arg name="tracked_step_limit_m" default="0.40" />
+    <arg name="tracked_geo_slope_weight" default="0.33" />
+    <arg name="tracked_geo_roughness_weight" default="0.33" />
+    <arg name="tracked_geo_step_weight" default="0.33" />
     <arg name="tracked_efficiency_flat_penalty" default="0.04" />
     <arg name="tracked_efficiency_rough_penalty" default="0.00" />
     <arg name="tracked_efficiency_rough_bonus" default="0.12" />
@@ -215,15 +205,10 @@
         <param name="fine_max_pose_tilt_deg" value="$(arg fine_max_pose_tilt_deg)" />
         <param name="fine_heading_samples" value="$(arg fine_heading_samples)" />
 
-        <!-- Platform-dependent geometry, pose and clearance capabilities -->
+        <!-- Platform-dependent geometry capabilities and cost weights -->
         <param name="wheeled_slope_limit_deg" value="$(arg wheeled_slope_limit_deg)" />
         <param name="wheeled_roughness_limit" value="$(arg wheeled_roughness_limit)" />
         <param name="wheeled_step_limit_m" value="$(arg wheeled_step_limit_m)" />
-        <param name="wheeled_roll_limit_deg" value="$(arg wheeled_roll_limit_deg)" />
-        <param name="wheeled_pitch_limit_deg" value="$(arg wheeled_pitch_limit_deg)" />
-        <param name="wheeled_max_pose_tilt_deg" value="$(arg wheeled_max_pose_tilt_deg)" />
-        <param name="wheeled_touch_gap_threshold" value="$(arg wheeled_touch_gap_threshold)" />
-        <param name="wheeled_collision_clearance" value="$(arg wheeled_collision_clearance)" />
         <param name="wheeled_geo_slope_weight" value="$(arg wheeled_geo_slope_weight)" />
         <param name="wheeled_geo_roughness_weight" value="$(arg wheeled_geo_roughness_weight)" />
         <param name="wheeled_geo_step_weight" value="$(arg wheeled_geo_step_weight)" />
@@ -235,11 +220,6 @@
         <param name="tracked_slope_limit_deg" value="$(arg tracked_slope_limit_deg)" />
         <param name="tracked_roughness_limit" value="$(arg tracked_roughness_limit)" />
         <param name="tracked_step_limit_m" value="$(arg tracked_step_limit_m)" />
-        <param name="tracked_roll_limit_deg" value="$(arg tracked_roll_limit_deg)" />
-        <param name="tracked_pitch_limit_deg" value="$(arg tracked_pitch_limit_deg)" />
-        <param name="tracked_max_pose_tilt_deg" value="$(arg tracked_max_pose_tilt_deg)" />
-        <param name="tracked_touch_gap_threshold" value="$(arg tracked_touch_gap_threshold)" />
-        <param name="tracked_collision_clearance" value="$(arg tracked_collision_clearance)" />
         <param name="tracked_geo_slope_weight" value="$(arg tracked_geo_slope_weight)" />
         <param name="tracked_geo_roughness_weight" value="$(arg tracked_geo_roughness_weight)" />
         <param name="tracked_geo_step_weight" value="$(arg tracked_geo_step_weight)" />
