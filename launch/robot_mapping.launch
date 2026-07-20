@@ -2,11 +2,17 @@
 <!-- Complete launch configuration with package-local traversability CSV output. -->
 <launch>
     <arg name="ns" default="vehicle0" />
+    
     <!-- Platform type selects the corresponding fine traversability layer. -->
+    <!-- <arg name="vehicle_type" default="wheeled" /> -->
     <arg name="vehicle_type" default="wheeled" />
     <arg name="publish_traversability_cloud" default="true" />
-    <arg name="traversability_cloud_topic"
-        default="local_traversability_cloud" />
+    <arg name="traversability_cloud_topic" default="local_traversability_cloud" />
+
+    <!-- Publish PlaneMap-compatible intensity values:
+         platform cost <= threshold -> 0.2, otherwise -> 1.0. -->
+    <arg name="terrain_map_cost_threshold" default="0.98" />
+
     <!-- Used only when both terrain elevation and BGK elevation are unknown. -->
     <arg name="unknown_height_offset" default="0.0" />
     <arg name="frame_id" default="map" />
@@ -150,6 +156,8 @@
             value="$(arg publish_traversability_cloud)" />
         <param name="traversability_cloud_topic"
             value="$(arg traversability_cloud_topic)" />
+        <param name="terrain_map_cost_threshold"
+            value="$(arg terrain_map_cost_threshold)" />
         <param name="unknown_height_offset"
             value="$(arg unknown_height_offset)" />
 

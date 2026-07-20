@@ -1,3 +1,11 @@
+/*
+ * @Author: lee lizw_0304@163.com
+ * @Date: 2026-07-15 21:21:31
+ * @LastEditors: lee lizw_0304@163.com
+ * @LastEditTime: 2026-07-20 10:47:52
+ * @FilePath: /src/obstacle_mapping/src/multi_robot_mapping.cpp
+ * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
+ */
 /**
  * @description: Multi-robot mapping node with conditional startup blind-spot completion
  * @filename: multi_robot_mapping.cpp
@@ -52,14 +60,24 @@ namespace
   // 子图，下一周期地图更新后不会沿用过期缓存。
   thread_local std::size_t fine_cycle_generation = 0;
 
-  // Local XYZI traversability cloud configuration.  The publisher is created
-  // in Mapping's constructor so the topic is visible immediately after node
-  // startup, even before the first synchronized scan arrives.
+  // Local XYZI terrain-map configuration for the original local_planner.
+  // The planner subscribes to /terrain_map and classifies a point as an
+  // obstacle when intensity > 0.2.  We therefore publish exactly two values:
+  // 0.2 for traversable terrain and 1.0 for non-traversable terrain.
   bool publish_local_trav_cloud = true;
   std::string local_trav_vehicle_type = "wheeled";
   std::string local_trav_layer = "traversability_fine_wheeled";
-  std::string local_trav_cloud_topic = "local_traversability_cloud";
-  double local_trav_unknown_height_offset = 0.0;
+  std::string local_trav_cloud_topic = "/terrain_map";
+  double terrain_map_cost_threshold = 0.98;
+  // Preserve the original FitPlane / local_planner Z convention.  After the
+  // planner subtracts vehicleZ, traversable points are at -0.1 m and obstacle
+  // points are at +0.6 m.
+  double terrain_map_traversable_z_offset = -0.1;
+  double terrain_map_obstacle_z_offset = 0.6;
+  // FitPlane compatibility: its unknown occupancy value (-1) is published as
+  // a traversable point.  Keep this configurable because treating unobserved
+  // terrain as free is less conservative than omitting it.
+  bool terrain_map_unknown_as_traversable = true;
   ros::Publisher local_trav_cloud_publisher;
 
   /**
@@ -528,9 +546,17 @@ Mapping::Mapping(ros::NodeHandle &nh, ros::NodeHandle &pnh)
   //                        local_trav_vehicle_type, "wheeled");
   pnh_.param<std::string>("traversability_cloud_topic",
                           local_trav_cloud_topic,
-                          "local_traversability_cloud");
-  pnh_.param<double>("unknown_height_offset",
-                     local_trav_unknown_height_offset, 0.0);
+                          "/terrain_map");
+  pnh_.param<double>("terrain_map_cost_threshold",
+                     terrain_map_cost_threshold, 0.98);
+  terrain_map_cost_threshold = std::max(
+      0.0, std::min(1.0, terrain_map_cost_threshold));
+  pnh_.param<double>("terrain_map_traversable_z_offset",
+                     terrain_map_traversable_z_offset, -0.1);
+  pnh_.param<double>("terrain_map_obstacle_z_offset",
+                     terrain_map_obstacle_z_offset, 0.6);
+  pnh_.param<bool>("terrain_map_unknown_as_traversable",
+                   terrain_map_unknown_as_traversable, true);
 
   if (local_trav_vehicle_type == "tracked")
   {
@@ -553,10 +579,14 @@ Mapping::Mapping(ros::NodeHandle &nh, ros::NodeHandle &pnh)
     local_trav_cloud_publisher =
         nh_.advertise<sensor_msgs::PointCloud2>(
             local_trav_cloud_topic, 1, false);
-    ROS_INFO("Publishing %s traversability cloud on %s using layer %s",
+    ROS_INFO("Publishing %s binary terrain map on %s using layer %s (cost threshold %.3f, intensities 0.2/1.0, z offsets %.2f/%.2f m, unknown_as_traversable=%s)",
              local_trav_vehicle_type.c_str(),
              local_trav_cloud_publisher.getTopic().c_str(),
-             local_trav_layer.c_str());
+             local_trav_layer.c_str(),
+             terrain_map_cost_threshold,
+             terrain_map_traversable_z_offset,
+             terrain_map_obstacle_z_offset,
+             terrain_map_unknown_as_traversable ? "true" : "false");
   }
   else
   {
@@ -682,7 +712,9 @@ void Mapping::loadParameters()
   pnh_.param<bool>("enable_incremental_trav", enable_incremental_trav_, true);
 
   // Load asynchronous processing parameters
-  pnh_.param<bool>("skip_old_messages", skip_old_messages_, false);
+  // Mapping is more expensive than a scan callback.  Keep only the newest
+  // waiting scan so terrain-cloud latency cannot grow without bound.
+  pnh_.param<bool>("skip_old_messages", skip_old_messages_, true);
 
   // // Load local grid map parameters
   // int nx, ny, nz;
@@ -5467,14 +5499,14 @@ bool Mapping::buildGridMapMessage(grid_map_msgs::GridMap &message)
   }
 
   // ==========================================
-  // [4] Publish local platform-specific XYZI traversability cloud.
+  // [4] Publish a local platform-specific XYZI /terrain_map.
   // ==========================================
   // Reuse the same local_map that is already cropped for trav_map.  This
   // avoids a second getSubmap() and keeps the additional publication cheap.
   if (publish_local_trav_cloud)
   {
-    if (!local_map.exists("elevation_BGK") ||
-        !local_map.exists(local_trav_layer))
+    local_trav_layer = "traversability";
+    if (!local_map.exists(local_trav_layer))
     {
       ROS_WARN_THROTTLE(
           2.0,
@@ -5484,13 +5516,13 @@ bool Mapping::buildGridMapMessage(grid_map_msgs::GridMap &message)
     else
     {
       pcl::PointCloud<pcl::PointXYZI> trav_cloud;
+      std::size_t traversable_point_count = 0;
+      std::size_t obstacle_point_count = 0;
+      std::size_t unknown_point_count = 0;
       const grid_map::Size local_size = local_map.getSize();
-      trav_cloud.points.reserve(
-          static_cast<std::size_t>(local_size(0)) *
-          static_cast<std::size_t>(local_size(1)));
+      trav_cloud.points.reserve(static_cast<std::size_t>(local_size(0)) * static_cast<std::size_t>(local_size(1)));
 
-      for (grid_map::GridMapIterator it(local_map);
-           !it.isPastEnd(); ++it)
+      for (grid_map::GridMapIterator it(local_map); !it.isPastEnd(); ++it)
       {
         grid_map::Position position;
         if (!local_map.getPosition(*it, position))
@@ -5498,36 +5530,49 @@ bool Mapping::buildGridMapMessage(grid_map_msgs::GridMap &message)
           continue;
         }
 
-        const float elevation =
-            local_map.at("elevation_BGK", *it);
-        const float traversability =
-            local_map.at(local_trav_layer, *it);
+        const float traversability = local_map.at(local_trav_layer, *it);
+
+        const bool is_unknown = !std::isfinite(traversability);
+
+        // The original FitPlane publishes occupancy value -1 as a traversable
+        // XYZI point.  This switch preserves that behavior by default while
+        // allowing a conservative deployment to omit unknown cells.
+        if (is_unknown && !terrain_map_unknown_as_traversable)
+        {
+          continue;
+        }
+
+        const bool is_obstacle = !is_unknown && traversability > static_cast<float>(terrain_map_cost_threshold);
 
         pcl::PointXYZI point;
         point.x = static_cast<float>(position.x());
         point.y = static_cast<float>(position.y());
+        point.z = static_cast<float>(current_pos.z() + (is_obstacle ? terrain_map_obstacle_z_offset : terrain_map_traversable_z_offset));
 
-        // Known terrain uses its observed/BGK-interpolated surface height.
-        // A completely unknown cell has no real height, so keep it in the
-        // cloud at the current robot height (plus an optional offset).
-        point.z = std::isfinite(elevation)
-                      ? elevation
-                      : static_cast<float>(
-                            current_pos.z() +
-                            local_trav_unknown_height_offset);
-
-        // Cost convention: 0 is easiest to traverse, 1 is non-traversable.
-        // Unknown or not-yet-computed cells are conservatively assigned 1.
-        point.intensity = std::isfinite(traversability)
-                              ? std::max(
-                                    0.0f,
-                                    std::min(1.0f, traversability))
-                              : 1.0f;
+        // Compatibility with the original local_planner:
+        //   intensity == 0.2 : traversable (not greater than its 0.2 threshold)
+        //   intensity == 1.0 : non-traversable obstacle
+        if (!is_obstacle)
+        {
+          point.intensity = 0.2f;
+          if (is_unknown)
+          {
+            ++unknown_point_count;
+          }
+          else
+          {
+            ++traversable_point_count;
+          }
+        }
+        else
+        {
+          point.intensity = 1.0f;
+          ++obstacle_point_count;
+        }
         trav_cloud.points.push_back(point);
       }
 
-      trav_cloud.width =
-          static_cast<std::uint32_t>(trav_cloud.points.size());
+      trav_cloud.width = static_cast<std::uint32_t>(trav_cloud.points.size());
       trav_cloud.height = 1;
       trav_cloud.is_dense = true;
 
@@ -5546,6 +5591,18 @@ bool Mapping::buildGridMapMessage(grid_map_msgs::GridMap &message)
       }
       trav_cloud_message.header.stamp = cloud_stamp;
       local_trav_cloud_publisher.publish(trav_cloud_message);
+
+      const double message_age =
+          std::max(0.0, (ros::Time::now() - cloud_stamp).toSec());
+      ROS_INFO_THROTTLE(
+          1.0,
+          "Published %s: total=%zu, traversable(0.2)=%zu, unknown_as_0.2=%zu, obstacle(1.0)=%zu, source_age=%.3f s",
+          local_trav_cloud_publisher.getTopic().c_str(),
+          trav_cloud.points.size(),
+          traversable_point_count,
+          unknown_point_count,
+          obstacle_point_count,
+          message_age);
     }
   }
 

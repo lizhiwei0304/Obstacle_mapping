@@ -14,10 +14,9 @@
     <arg name="start_topic" default="/start_exploration" />
 
     <group ns="$(arg namespace_1)">
-        <node name="cloud_merger_and_accumulator"
-              pkg="obstacle_mapping"
-              type="cloud_merger_and_accumulator.py"
-              output="screen">
+        <node name="cloud_merger_and_accumulator" pkg="obstacle_mapping"
+            type="cloud_merger_and_accumulator.py"
+            output="screen">
             <param name="wait_for_start" value="$(arg wait_for_start)" />
             <param name="start_topic" value="$(arg start_topic)" />
 
@@ -34,7 +33,7 @@
             <param name="registered_scan" value="registered_scan_filted" />
             <param name="terrain_merged_out" value="terrain_map_merged" />
             <param name="registered_scan_accum_out"
-                   value="registered_scan_accum_5" />
+                value="registered_scan_accum_5" />
             <param name="sync_slop" value="0.10" />
             <param name="sync_queue" value="10" />
         </node>
