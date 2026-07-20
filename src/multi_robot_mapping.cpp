@@ -2,7 +2,7 @@
  * @Author: lee lizw_0304@163.com
  * @Date: 2026-07-15 21:21:31
  * @LastEditors: lee lizw_0304@163.com
- * @LastEditTime: 2026-07-20 14:08:57
+ * @LastEditTime: 2026-07-20 16:01:16
  * @FilePath: /src/obstacle_mapping/src/multi_robot_mapping.cpp
  * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
  */
@@ -79,6 +79,49 @@ namespace
   // terrain as free is less conservative than omitting it.
   bool terrain_map_unknown_as_traversable = true;
   ros::Publisher local_trav_cloud_publisher;
+
+  // Parameters shared by step-height extraction and platform-specific
+  // coarse traversability.  Keeping them in this translation unit avoids
+  // adding class members solely for this feature.
+  struct StepEvaluationConfig
+  {
+    // Quantile of plane-compensated neighbor residuals used as step height.
+    double robust_quantile = 0.90;
+    // Minimum number of valid neighboring cells required for a result.
+    int min_valid_neighbors = 3;
+    // Measurement/interpolation tolerance before a platform step limit is
+    // turned into a hard non-traversable decision.
+    double noise_margin_m = 0.05;
+  };
+
+  const StepEvaluationConfig &stepEvaluationConfig(ros::NodeHandle &pnh)
+  {
+    static StepEvaluationConfig config;
+    static bool configured = false;
+    if (!configured)
+    {
+      pnh.param<double>("step_robust_quantile",
+                        config.robust_quantile, 0.90);
+      pnh.param<int>("step_min_valid_neighbors",
+                     config.min_valid_neighbors, 3);
+      pnh.param<double>("step_noise_margin_m",
+                        config.noise_margin_m, 0.05);
+
+      config.robust_quantile =
+          std::max(0.50, std::min(1.0, config.robust_quantile));
+      config.min_valid_neighbors =
+          std::max(1, config.min_valid_neighbors);
+      config.noise_margin_m =
+          std::max(0.0, config.noise_margin_m);
+      configured = true;
+
+      ROS_INFO("Step evaluation: quantile=%.2f, min_neighbors=%d, noise_margin=%.3f m",
+               config.robust_quantile,
+               config.min_valid_neighbors,
+               config.noise_margin_m);
+    }
+    return config;
+  }
 
   /**
    * @brief Single-slot background executor used by global_trav_map.
@@ -1404,7 +1447,7 @@ void Mapping::processPointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud
   // -----------------------
   // Step 4: Step mapping
   // -----------------------
-  // 计算台阶/突变特征（例如邻域最大高度差）
+  // 计算台阶/突变特征（局部平面补偿后的稳健高度残差）
   time1 = ros::Time::now().toSec();
   step_mapping();
   time2 = ros::Time::now().toSec();
@@ -2238,6 +2281,13 @@ void Mapping::step_mapping()
 
 bool Mapping::areaSingleStepComputation(const grid_map::Index &index)
 {
+  // A cell may be recomputed after a height update.  Clear its previous
+  // values first so a failed recomputation cannot leave stale step data.
+  height_map_.at("step", index) =
+      std::numeric_limits<float>::quiet_NaN();
+  height_map_.at("step_height", index) =
+      std::numeric_limits<float>::quiet_NaN();
+
   // =====================================================
   // [0] 将当前 cell 的 index 转换成连续坐标 center_pos=(x,y)
   // =====================================================
@@ -2255,42 +2305,91 @@ bool Mapping::areaSingleStepComputation(const grid_map::Index &index)
   // step 特征通常希望在缺测区域也能计算，所以你用 BGK 层更“连续”
   float center_z = height_map_.at("elevation_BGK", index);
 
-  // 若当前 cell 的高度无效（NaN），无法计算 step
-  if (std::isnan(center_z))
+  // 若当前 cell 的高度无效，无法计算 step
+  if (!std::isfinite(center_z))
   {
     return false;
   }
 
   // =====================================================
-  // [2] 在 step_radius_ 邻域内遍历邻居格子，计算最大高度差（max_step）
+  // [2] 去除连续坡面高度变化，收集邻域台阶残差
   // =====================================================
-  // step 的直觉：如果周围存在“台阶/突变”，那么中心格与某些邻居格的高度差会很大
-  // 你采用的定义：max_step = max_{neighbor in radius} |z_center - z_neighbor|
-  float max_step = -1.0f; // 初始化为 -1 表示尚未找到任何有效邻居
+  // 原始 |z_center-z_neighbor| 会把正常斜坡当作台阶。利用几何计算
+  // 已得到的中心法向预测邻居的平面高度，真正统计的是邻居高度相对
+  // 该平面的残差。
+  const StepEvaluationConfig &step_config =
+      stepEvaluationConfig(pnh_);
+
+  const float normal_x = height_map_.at("normal_x", index);
+  const float normal_y = height_map_.at("normal_y", index);
+  const float normal_z = height_map_.at("normal_z", index);
+  const bool use_plane_compensation =
+      std::isfinite(normal_x) &&
+      std::isfinite(normal_y) &&
+      std::isfinite(normal_z) &&
+      std::abs(normal_z) > 0.20f;
+
+  std::vector<float> height_residuals;
 
   for (grid_map::CircleIterator sit(height_map_, center_pos, step_radius_);
        !sit.isPastEnd();
        ++sit)
   {
+    const grid_map::Index neighbor_index = *sit;
+    if (neighbor_index(0) == index(0) &&
+        neighbor_index(1) == index(1))
+    {
+      continue;
+    }
+
     // 取邻居格子的高度
-    float neighbor_z = height_map_.at("elevation_BGK", *sit);
+    const float neighbor_z =
+        height_map_.at("elevation_BGK", neighbor_index);
 
     // 只用有效高度参与计算
-    if (!std::isnan(neighbor_z))
+    if (std::isfinite(neighbor_z))
     {
-      // 当前邻居与中心格的高度差（绝对值）
-      float step = std::abs(center_z - neighbor_z);
+      double expected_z = static_cast<double>(center_z);
+      if (use_plane_compensation)
+      {
+        grid_map::Position neighbor_pos;
+        if (!height_map_.getPosition(neighbor_index, neighbor_pos))
+        {
+          continue;
+        }
 
-      // 更新最大高度差
-      max_step = std::max(step, max_step);
+        const double dx = neighbor_pos.x() - center_pos.x();
+        const double dy = neighbor_pos.y() - center_pos.y();
+        expected_z -=
+            (static_cast<double>(normal_x) * dx +
+             static_cast<double>(normal_y) * dy) /
+            static_cast<double>(normal_z);
+      }
+
+      const double residual =
+          std::abs(static_cast<double>(neighbor_z) - expected_z);
+      if (std::isfinite(residual))
+      {
+        height_residuals.push_back(static_cast<float>(residual));
+      }
     }
   }
 
-  // 如果 max_step 仍然 < 0，说明邻域里没有任何有效高度，无法计算
-  if (max_step < 0)
+  if (height_residuals.size() <
+      static_cast<std::size_t>(step_config.min_valid_neighbors))
   {
     return false;
   }
+
+  std::sort(height_residuals.begin(), height_residuals.end());
+  // round() keeps the maximum when the existing neighborhood contains only
+  // 3-4 cells, while a denser neighborhood can discard one isolated maximum.
+  const std::size_t quantile_index = std::min(
+      height_residuals.size() - 1,
+      static_cast<std::size_t>(std::llround(
+          step_config.robust_quantile *
+          static_cast<double>(height_residuals.size() - 1))));
+  const float robust_step = height_residuals[quantile_index];
 
   // =====================================================
   // [3] step 阈值检查：用于归一化（防止除零）
@@ -2308,10 +2407,10 @@ bool Mapping::areaSingleStepComputation(const grid_map::Index &index)
   // [4] 写回 step layer：归一化后的台阶指标
   // =====================================================
   // 归一化后：
-  // - step ≈ 1 表示接近阈值大小的台阶
+  // - step ≈ 1 表示稳健台阶残差接近通用阈值
   // - step > 1 表示超过阈值的突变（可认为更不可通行）
-  height_map_.at("step", index) = max_step / step_threshold_;
-  height_map_.at("step_height", index) = max_step;
+  height_map_.at("step", index) = robust_step / step_threshold_;
+  height_map_.at("step_height", index) = robust_step;
 
   return true;
 }
@@ -2440,6 +2539,9 @@ void Mapping::finegrained_traversability_mapping()
 {
   std::lock_guard<std::mutex> lock(gridmap_publish_mutex_);
   ++fine_cycle_generation;
+
+  const StepEvaluationConfig &step_config =
+      stepEvaluationConfig(pnh_);
 
   auto &traversability = height_map_["traversability"];
   auto &slope_layer = height_map_["slope"];
@@ -3004,16 +3106,30 @@ void Mapping::finegrained_traversability_mapping()
         !std::isfinite(raw_roughness) ||
         !std::isfinite(raw_step_m))
     {
+      for (auto &vehicle : vehicles)
+      {
+        (*(vehicle.coarse_layer))(idx(0), idx(1)) =
+            std::numeric_limits<float>::quiet_NaN();
+        (*(vehicle.fine_layer))(idx(0), idx(1)) =
+            std::numeric_limits<float>::quiet_NaN();
+      }
       ++count_skipped;
       continue;
     }
+
+    // Remove the configurable measurement/interpolation tolerance before
+    // calculating continuous platform step risk.  The raw value is retained
+    // for diagnostics and for the hard capability comparison below.
+    const double effective_step_m = std::max(
+        0.0,
+        static_cast<double>(raw_step_m) - step_config.noise_margin_m);
 
     const double slope_severity =
         clamp01(raw_slope_deg / efficiency_slope_reference_deg);
     const double roughness_severity =
         clamp01(raw_roughness / efficiency_roughness_reference);
     const double step_severity =
-        clamp01(raw_step_m / efficiency_step_reference_m);
+        clamp01(effective_step_m / efficiency_step_reference_m);
     const double terrain_severity = clamp01(
         severity_slope_weight * slope_severity +
         severity_roughness_weight * roughness_severity +
@@ -3036,12 +3152,16 @@ void Mapping::finegrained_traversability_mapping()
       cell_metrics.roughness_ratio =
           raw_roughness / capability.roughness_limit;
       cell_metrics.step_ratio =
-          raw_step_m / capability.step_limit_m;
+          effective_step_m / capability.step_limit_m;
+
+      const bool step_capability_exceeded =
+          static_cast<double>(raw_step_m) >=
+          capability.step_limit_m + step_config.noise_margin_m;
 
       const bool capability_exceeded =
           cell_metrics.slope_ratio >= 1.0 ||
           cell_metrics.roughness_ratio >= 1.0 ||
-          cell_metrics.step_ratio >= 1.0;
+          step_capability_exceeded;
 
       if (capability_exceeded)
       {
@@ -5527,7 +5647,7 @@ bool Mapping::buildGridMapMessage(grid_map_msgs::GridMap &message)
   // avoids a second getSubmap() and keeps the additional publication cheap.
   if (publish_local_trav_cloud)
   {
-    local_trav_layer = "traversability_coarse_wheeled";
+    // local_trav_layer = "traversability_coarse_wheeled";
     if (!local_map.exists(local_trav_layer))
     {
       ROS_WARN_THROTTLE(

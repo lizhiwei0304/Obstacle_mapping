@@ -62,7 +62,7 @@
     <!-- Wheeled-platform capability and geometry-cost parameters. -->
     <arg name="wheeled_slope_limit_deg" default="30.0" />
     <arg name="wheeled_roughness_limit" default="0.04" />
-    <arg name="wheeled_step_limit_m" default="0.30" />
+    <arg name="wheeled_step_limit_m" default="0.10" />
     <arg name="wheeled_geo_slope_weight" default="0.33" />
     <arg name="wheeled_geo_roughness_weight" default="0.33" />
     <arg name="wheeled_geo_step_weight" default="0.33" />
@@ -73,7 +73,7 @@
     <!-- Tracked-platform capability and geometry-cost parameters. -->
     <arg name="tracked_slope_limit_deg" default="35.0" />
     <arg name="tracked_roughness_limit" default="0.08" />
-    <arg name="tracked_step_limit_m" default="0.40" />
+    <arg name="tracked_step_limit_m" default="0.20" />
     <arg name="tracked_geo_slope_weight" default="0.33" />
     <arg name="tracked_geo_roughness_weight" default="0.33" />
     <arg name="tracked_geo_step_weight" default="0.33" />
@@ -227,6 +227,10 @@
         <param name="tracked_efficiency_rough_penalty"
             value="$(arg tracked_efficiency_rough_penalty)" />
         <param name="tracked_efficiency_rough_bonus" value="$(arg tracked_efficiency_rough_bonus)" />
+
+        <param name="step_robust_quantile" value="0.90" />
+        <param name="step_min_valid_neighbors" value="3" />
+        <param name="step_noise_margin_m" value="0.05" />
 
         <param name="pose_angle_weight" value="$(arg pose_angle_weight)" />
         <param name="pose_support_weight" value="$(arg pose_support_weight)" />
