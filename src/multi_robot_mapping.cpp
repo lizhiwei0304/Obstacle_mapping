@@ -2,7 +2,7 @@
  * @Author: lee lizw_0304@163.com
  * @Date: 2026-07-15 21:21:31
  * @LastEditors: lee lizw_0304@163.com
- * @LastEditTime: 2026-07-20 16:56:49
+ * @LastEditTime: 2026-07-20 20:09:56
  * @FilePath: /src/obstacle_mapping/src/multi_robot_mapping.cpp
  * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
  */
@@ -982,8 +982,9 @@ Mapping::Mapping(ros::NodeHandle &nh, ros::NodeHandle &pnh)
       nh_, scan_topic_, queue_size_);
 
   odom_filter_sub_ = std::make_shared<message_filters::Subscriber<nav_msgs::Odometry>>(
-      nh_, "/laser_odom_init", queue_size_);
+      nh_, "state_estimation", queue_size_);
 
+      
   // Create approximate time synchronizer (allows small time differences)
   // Queue size of 10 means it will try to synchronize the last 10 messages from each topic
   sync_ = std::make_shared<message_filters::Synchronizer<SyncPolicy>>(
