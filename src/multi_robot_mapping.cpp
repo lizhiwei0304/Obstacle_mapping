@@ -2,7 +2,7 @@
  * @Author: lee lizw_0304@163.com
  * @Date: 2026-07-15 21:21:31
  * @LastEditors: lee lizw_0304@163.com
- * @LastEditTime: 2026-07-20 20:33:48
+ * @LastEditTime: 2026-07-21 10:59:26
  * @FilePath: /src/obstacle_mapping/src/multi_robot_mapping.cpp
  * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
  */
@@ -675,23 +675,21 @@ namespace
   }
 
   /**
-   * @brief Fill only a small, closed unknown component containing the initial
-   *        vehicle position.
+   * @brief 补全初始位置附近的激光雷达近场盲区。
    *
-   * The 16-beam lidar may leave a near-field blind spot around the starting
-   * pose.  This function deliberately does not fill an arbitrary circle.  It
-   * first performs an 8-connected flood fill on invalid elevation_BGK cells.
-   * The component is accepted only when it is completely enclosed by valid
-   * terrain, remains inside search_radius, is small enough, and has enough
-   * valid boundary cells.  A plane fitted to the boundary is then used to fill
-   * the missing elevation while n_points remains zero (the values are inferred,
-   * not real lidar observations).
+   * 不再要求 unknown 区域构成严格封闭连通域。只在 fill_radius
+   * 范围内查找无效 elevation_BGK 栅格，并使用盲区边缘附近的
+   * 有效地形高度拟合局部平面。
+   *
+   * 仅修改 elevation_BGK 和 interpolated，n_points 仍然保持为0，
+   * 表示这些高度属于推断结果，而不是真实激光观测。
    */
-  StartupHoleFillResult fillClosedStartupHole(
+  StartupHoleFillResult fillStartupBlindArea(
       grid_map::GridMap &map,
       const grid_map::Position &initial_position,
-      double search_radius,
-      std::size_t max_hole_cells,
+      double fill_radius,
+      double boundary_width,
+      std::size_t max_fill_cells,
       std::size_t min_boundary_cells,
       double recompute_radius,
       std::size_t &filled_cell_count)
@@ -700,183 +698,227 @@ namespace
 
     if (!map.exists("elevation_BGK") ||
         !map.exists("interpolated") ||
-        search_radius <= map.getResolution())
+        fill_radius <= map.getResolution() ||
+        boundary_width < map.getResolution())
     {
       return StartupHoleFillResult::kInvalidMap;
     }
 
-    grid_map::Index seed;
-    if (!map.getIndex(initial_position, seed))
+    grid_map::Index initial_index;
+    if (!map.getIndex(initial_position, initial_index))
     {
       return StartupHoleFillResult::kInvalidMap;
     }
 
     auto &elevation_bgk = map["elevation_BGK"];
-    if (std::isfinite(elevation_bgk(seed(0), seed(1))))
+    auto &interpolated = map["interpolated"];
+
+    // 需要补全的范围。
+    const double boundary_inner_radius =
+        std::max(0.0, fill_radius - boundary_width);
+
+    const double boundary_outer_radius =
+        fill_radius + boundary_width;
+
+    // 只保存索引，避免依赖unknown连通性。
+    std::vector<std::pair<int, int>> fill_cells;
+    std::vector<std::pair<int, int>> boundary_cells;
+
+    // 同时扫描盲区和边界带。
+    for (grid_map::CircleIterator it(
+             map, initial_position, boundary_outer_radius);
+         !it.isPastEnd(); ++it)
     {
-      // The initial position is already covered (typical for the 32-beam lidar).
-      return StartupHoleFillResult::kNoHole;
-    }
+      const grid_map::Index index = *it;
 
-    const grid_map::Size map_size = map.getSize();
-    const auto in_bounds = [&map_size](int row, int col)
-    {
-      return row >= 0 && col >= 0 &&
-             row < map_size(0) && col < map_size(1);
-    };
-
-    const std::array<std::pair<int, int>, 8> neighbors = {{{-1, -1}, {-1, 0}, {-1, 1}, {0, -1}, {0, 1}, {1, -1}, {1, 0}, {1, 1}}};
-
-    std::queue<grid_map::Index> pending;
-    std::set<std::pair<int, int>> hole_cells;
-    std::set<std::pair<int, int>> boundary_cells;
-    pending.push(seed);
-    hole_cells.insert({seed(0), seed(1)});
-
-    bool touches_search_boundary = false;
-
-    while (!pending.empty())
-    {
-      const grid_map::Index current = pending.front();
-      pending.pop();
-
-      for (const auto &offset : neighbors)
+      grid_map::Position position;
+      if (!map.getPosition(index, position))
       {
-        const int row = current(0) + offset.first;
-        const int col = current(1) + offset.second;
+        continue;
+      }
 
-        if (!in_bounds(row, col))
-        {
-          touches_search_boundary = true;
-          continue;
-        }
+      const double distance =
+          (position - initial_position).norm();
 
-        const grid_map::Index neighbor(row, col);
-        const float height = elevation_bgk(row, col);
-        if (std::isfinite(height))
-        {
-          boundary_cells.insert({row, col});
-          continue;
-        }
+      const float height =
+          elevation_bgk(index(0), index(1));
 
-        grid_map::Position position;
-        if (!map.getPosition(neighbor, position))
-        {
-          touches_search_boundary = true;
-          continue;
-        }
+      // 只补填fill_radius内部的NaN。
+      if (distance <= fill_radius &&
+          !std::isfinite(height))
+      {
+        fill_cells.emplace_back(index(0), index(1));
+      }
 
-        if ((position - initial_position).norm() > search_radius)
-        {
-          // The unknown component continues outside the protected startup area,
-          // so it is open/unexplored space rather than a closed lidar blind spot.
-          touches_search_boundary = true;
-          continue;
-        }
-
-        if (hole_cells.insert({row, col}).second)
-        {
-          if (hole_cells.size() > max_hole_cells)
-          {
-            return StartupHoleFillResult::kTooLarge;
-          }
-          pending.push(neighbor);
-        }
+      // 从盲区边缘内外一定宽度内收集有效高度。
+      if (distance >= boundary_inner_radius &&
+          distance <= boundary_outer_radius &&
+          std::isfinite(height))
+      {
+        boundary_cells.emplace_back(index(0), index(1));
       }
     }
 
-    if (touches_search_boundary)
+    ROS_INFO_THROTTLE(
+        1.0,
+        "Startup blind-area candidate: fill_cells=%zu, "
+        "boundary_cells=%zu, radius=%.2f, boundary_width=%.2f",
+        fill_cells.size(),
+        boundary_cells.size(),
+        fill_radius,
+        boundary_width);
+
+    // 整个限定区域已经有有效高度，无需再补。
+    if (fill_cells.empty())
     {
-      return StartupHoleFillResult::kNotClosed;
+      return StartupHoleFillResult::kNoHole;
     }
 
+    // 防止参数设置错误导致补全区域过大。
+    if (fill_cells.size() > max_fill_cells)
+    {
+      ROS_WARN_THROTTLE(
+          1.0,
+          "Startup blind area has %zu invalid cells, "
+          "exceeding max_fill_cells=%zu",
+          fill_cells.size(),
+          max_fill_cells);
+
+      return StartupHoleFillResult::kTooLarge;
+    }
+
+    // 等待雷达在盲区外围形成足够的有效地面高度。
     if (boundary_cells.size() < min_boundary_cells)
     {
+      ROS_WARN_THROTTLE(
+          1.0,
+          "Startup blind area has insufficient boundary: "
+          "%zu < %zu",
+          boundary_cells.size(),
+          min_boundary_cells);
+
       return StartupHoleFillResult::kInsufficientBoundary;
     }
 
-    // Fit z = ax + by + c to the valid ring around the hole.  This preserves a
-    // local slope and is safer than assigning a constant traversability value.
+    // 使用边界有效高度拟合：
+    // z = ax + by + c
     Eigen::MatrixXd A(boundary_cells.size(), 3);
     Eigen::VectorXd z(boundary_cells.size());
-    double min_boundary_z = std::numeric_limits<double>::infinity();
-    double max_boundary_z = -std::numeric_limits<double>::infinity();
 
-    Eigen::Index sample = 0;
-    for (const auto &cell : boundary_cells)
+    double min_boundary_z =
+        std::numeric_limits<double>::infinity();
+
+    double max_boundary_z =
+        -std::numeric_limits<double>::infinity();
+
+    for (std::size_t i = 0;
+         i < boundary_cells.size(); ++i)
     {
-      const grid_map::Index index(cell.first, cell.second);
+      const grid_map::Index index(
+          boundary_cells[i].first,
+          boundary_cells[i].second);
+
       grid_map::Position position;
       if (!map.getPosition(index, position))
       {
         return StartupHoleFillResult::kInvalidMap;
       }
 
-      const double height = elevation_bgk(cell.first, cell.second);
-      A.row(sample) << position.x(), position.y(), 1.0;
-      z(sample) = height;
-      min_boundary_z = std::min(min_boundary_z, height);
-      max_boundary_z = std::max(max_boundary_z, height);
-      ++sample;
+      const double height =
+          static_cast<double>(
+              elevation_bgk(index(0), index(1)));
+
+      A.row(static_cast<Eigen::Index>(i))
+          << position.x(),
+          position.y(), 1.0;
+
+      z(static_cast<Eigen::Index>(i)) = height;
+
+      min_boundary_z =
+          std::min(min_boundary_z, height);
+
+      max_boundary_z =
+          std::max(max_boundary_z, height);
     }
 
-    const Eigen::Vector3d plane = A.colPivHouseholderQr().solve(z);
+    Eigen::ColPivHouseholderQR<Eigen::MatrixXd> qr(A);
+
+    // 边界点分布退化，例如全部集中在一条直线上。
+    if (qr.rank() < 3)
+    {
+      ROS_WARN_THROTTLE(
+          1.0,
+          "Startup blind-area boundary geometry is degenerate");
+
+      return StartupHoleFillResult::kInsufficientBoundary;
+    }
+
+    const Eigen::Vector3d plane = qr.solve(z);
+
     if (!plane.allFinite())
     {
       return StartupHoleFillResult::kInvalidMap;
     }
 
-    auto &interpolated = map["interpolated"];
-    for (const auto &cell : hole_cells)
+    // 只修改限定半径内的无效高度。
+    for (const auto &cell : fill_cells)
     {
-      const grid_map::Index index(cell.first, cell.second);
+      const grid_map::Index index(
+          cell.first, cell.second);
+
       grid_map::Position position;
       if (!map.getPosition(index, position))
       {
         continue;
       }
 
-      double predicted_z = plane.x() * position.x() +
-                           plane.y() * position.y() + plane.z();
-      // Prevent a poorly conditioned fit from creating a peak or pit inside the
-      // repaired region.
-      predicted_z = std::max(min_boundary_z,
-                             std::min(max_boundary_z, predicted_z));
+      double predicted_z =
+          plane.x() * position.x() +
+          plane.y() * position.y() +
+          plane.z();
 
-      elevation_bgk(cell.first, cell.second) =
+      // 防止拟合结果产生异常凸起或深坑。
+      predicted_z = std::max(
+          min_boundary_z,
+          std::min(max_boundary_z, predicted_z));
+
+      elevation_bgk(index(0), index(1)) =
           static_cast<float>(predicted_z);
-      interpolated(cell.first, cell.second) = 1.0f;
+
+      interpolated(index(0), index(1)) = 1.0f;
+
       ++filled_cell_count;
     }
 
-    // A repair can change the neighborhood used by slope/step computation.  If
-    // an earlier frame already evaluated nearby cells in incremental mode, mark
-    // them for recomputation in the current pipeline.
+    // 补全会影响附近坡度、台阶、粗糙度和精细化可通行性，
+    // 因此将整个受影响范围标记为需要重新计算。
     const std::array<const char *, 4> computed_layers = {{"incremental_geom_computed",
                                                           "incremental_step_computed",
                                                           "incremental_trav_computed",
                                                           "incremental_fine_computed"}};
 
-    for (const auto &cell : hole_cells)
-    {
-      grid_map::Position position;
-      if (!map.getPosition(grid_map::Index(cell.first, cell.second), position))
-      {
-        continue;
-      }
+    const double dirty_radius =
+        fill_radius + recompute_radius;
 
-      for (grid_map::CircleIterator it(map, position, recompute_radius);
-           !it.isPastEnd(); ++it)
+    for (grid_map::CircleIterator it(
+             map, initial_position, dirty_radius);
+         !it.isPastEnd(); ++it)
+    {
+      for (const char *layer : computed_layers)
       {
-        for (const char *layer : computed_layers)
+        if (map.exists(layer))
         {
-          if (map.exists(layer))
-          {
-            map.at(layer, *it) = 0.0f;
-          }
+          map.at(layer, *it) = 0.0f;
         }
       }
     }
+
+    ROS_INFO(
+        "Startup blind area filled: cells=%zu, "
+        "boundary=%zu, radius=%.2f m",
+        filled_cell_count,
+        boundary_cells.size(),
+        fill_radius);
 
     return StartupHoleFillResult::kFilled;
   }
@@ -1773,104 +1815,203 @@ void Mapping::processPointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud
   ROS_INFO("BGK mapping: %.4f seconds", time2 - time1);
 
   // -------------------------------------------------------------------------
-  // 步骤 2.5：条件性启动盲区补全
+  // 步骤 2.5：初始位置限定范围盲区补全
   // -------------------------------------------------------------------------
-  // 稀疏激光雷达可能会在初始位姿周围留下一个封闭的未知区域（连通域）。
-  // 检测并仅填充该区域。如果初始栅格（cell）已经是有效值，
-  // 或者未知区域是开放的/范围过大，则不进行任何处理。
+  // 不再要求unknown区域完全封闭。只补初始位置固定半径内的
+  // elevation_BGK无效栅格，并从盲区边缘有效地形拟合局部平面。
+  static bool startup_fill_configured = false;
+  static bool startup_fill_enabled = true;
+  static bool startup_position_recorded = false;
+  static bool startup_fill_finished = false;
 
-  // 静态状态变量，用于在多次回调中保持状态
-  static bool startup_fill_configured = false;     // 参数是否已初始化配置
-  static bool startup_fill_enabled = true;         // 是否启用启动盲区填充
-  static bool startup_position_recorded = false;   // 是否已记录初始位置
-  static bool startup_fill_finished = false;       // 盲区填充流程是否已结束（成功或放弃）
-  static grid_map::Position startup_position;      // 记录的初始位置坐标
-  static double startup_hole_radius = 3.0;         // 允许盲区空洞的最大半径（单位：米）
-  static int startup_hole_max_cells = 200;         // 允许盲区空洞的最大栅格数量（限制填充规模）
-  static int startup_hole_min_boundary_cells = 12; // 盲区边界所需的最少有效栅格数（用于确认封闭性）
-  static int startup_hole_max_attempts = 30;       // 放弃检测前的最大尝试次数（通常等待地图初始化完成）
-  static int startup_hole_attempts = 0;            // 当前已尝试的次数
+  static grid_map::Position startup_position;
 
-  // 1. 初始化配置：仅在首次运行时从 ROS 参数服务器加载参数
+  // 雷达高度0.72 m、最低俯角约-15°，
+  // 理论盲区半径约为2.69 m，因此取3.3 m并保留余量。
+  static double startup_hole_radius = 3.3;
+
+  // 在盲区半径内外各0.9 m范围收集有效地面高度。
+  static double startup_hole_boundary_width = 0.9;
+
+  // 0.3 m分辨率下，3.3 m圆形区域总共约380个栅格。
+  static int startup_hole_max_cells = 800;
+
+  static int startup_hole_min_boundary_cells = 12;
+  static int startup_hole_max_attempts = 100;
+  static int startup_hole_attempts = 0;
+
   if (!startup_fill_configured)
   {
-    pnh_.param<bool>("enable_startup_hole_fill",
-                     startup_fill_enabled, true);
-    pnh_.param<double>("startup_hole_radius",
-                       startup_hole_radius, 3.0);
-    pnh_.param<int>("startup_hole_max_cells",
-                    startup_hole_max_cells, 200);
-    pnh_.param<int>("startup_hole_min_boundary_cells",
-                    startup_hole_min_boundary_cells, 12);
-    pnh_.param<int>("startup_hole_max_attempts",
-                    startup_hole_max_attempts, 30);
+    pnh_.param<bool>(
+        "enable_startup_hole_fill",
+        startup_fill_enabled,
+        true);
 
-    // 参数安全性限制，防止参数设置不合理导致计算异常
-    startup_hole_radius = std::max(map_resolution_ * 2.0,
-                                   startup_hole_radius);
-    startup_hole_max_cells = std::max(1, startup_hole_max_cells);
+    pnh_.param<double>(
+        "startup_hole_radius",
+        startup_hole_radius,
+        3.3);
+
+    pnh_.param<double>(
+        "startup_hole_boundary_width",
+        startup_hole_boundary_width,
+        0.9);
+
+    pnh_.param<int>(
+        "startup_hole_max_cells",
+        startup_hole_max_cells,
+        800);
+
+    pnh_.param<int>(
+        "startup_hole_min_boundary_cells",
+        startup_hole_min_boundary_cells,
+        12);
+
+    pnh_.param<int>(
+        "startup_hole_max_attempts",
+        startup_hole_max_attempts,
+        100);
+
+    startup_hole_radius =
+        std::max(map_resolution_ * 2.0,
+                 startup_hole_radius);
+
+    startup_hole_boundary_width =
+        std::max(map_resolution_,
+                 startup_hole_boundary_width);
+
+    startup_hole_max_cells =
+        std::max(1, startup_hole_max_cells);
+
     startup_hole_min_boundary_cells =
         std::max(3, startup_hole_min_boundary_cells);
-    startup_hole_max_attempts = std::max(1, startup_hole_max_attempts);
+
+    startup_hole_max_attempts =
+        std::max(1, startup_hole_max_attempts);
+
     startup_fill_configured = true;
 
-    // 输出初始化配置日志
-    ROS_INFO("Startup hole filling: %s, radius=%.2f m, max_cells=%d, min_boundary=%d, max_attempts=%d",
-             startup_fill_enabled ? "enabled" : "disabled",
-             startup_hole_radius,
-             startup_hole_max_cells,
-             startup_hole_min_boundary_cells,
-             startup_hole_max_attempts);
+    ROS_INFO(
+        "Startup blind-area filling: %s, "
+        "radius=%.2f m, boundary_width=%.2f m, "
+        "max_cells=%d, min_boundary=%d, max_attempts=%d",
+        startup_fill_enabled ? "enabled" : "disabled",
+        startup_hole_radius,
+        startup_hole_boundary_width,
+        startup_hole_max_cells,
+        startup_hole_min_boundary_cells,
+        startup_hole_max_attempts);
   }
 
-  // 2. 执行盲区填充逻辑
-  if (startup_fill_enabled && !startup_fill_finished)
+  if (startup_fill_enabled &&
+      !startup_fill_finished)
   {
-    // 首次进入时，记录机器人初始的 2D 位置
+    // 固定记录第一帧同步点云对应的车辆位置，
+    // 后续重试时不会跟随车辆移动。
     if (!startup_position_recorded)
     {
-      startup_position = grid_map::Position(current_pos.x(), current_pos.y());
+      startup_position =
+          grid_map::Position(
+              current_pos.x(),
+              current_pos.y());
+
       startup_position_recorded = true;
+
+      ROS_INFO(
+          "Recorded startup blind-area center: "
+          "x=%.3f, y=%.3f",
+          startup_position.x(),
+          startup_position.y());
     }
 
     std::size_t filled_cells = 0;
     StartupHoleFillResult fill_result;
 
-    // 线程安全锁：执行盲区搜索与填充算法
     {
-      std::lock_guard<std::mutex> lock(gridmap_publish_mutex_);
-      fill_result = fillClosedStartupHole(
+      std::lock_guard<std::mutex> lock(
+          gridmap_publish_mutex_);
+
+      fill_result = fillStartupBlindArea(
           height_map_,
           startup_position,
           startup_hole_radius,
-          static_cast<std::size_t>(startup_hole_max_cells),
-          static_cast<std::size_t>(startup_hole_min_boundary_cells),
-          std::max(normal_estimation_radius_, step_radius_) + map_resolution_,
+          startup_hole_boundary_width,
+          static_cast<std::size_t>(
+              startup_hole_max_cells),
+          static_cast<std::size_t>(
+              startup_hole_min_boundary_cells),
+          std::max(
+              normal_estimation_radius_,
+              step_radius_) +
+              map_resolution_,
           filled_cells);
     }
 
-    // 3. 处理算法返回结果
-    if (fill_result == StartupHoleFillResult::kFilled)
+    if (fill_result ==
+        StartupHoleFillResult::kFilled)
     {
-      // 成功找到并填充了封闭的盲区
       startup_fill_finished = true;
-      ROS_INFO("Filled closed startup lidar blind spot: %zu cells", filled_cells);
+
+      ROS_INFO(
+          "Completed startup blind-area filling: "
+          "%zu cells",
+          filled_cells);
     }
-    else if (fill_result == StartupHoleFillResult::kNoHole)
+    else if (fill_result ==
+             StartupHoleFillResult::kNoHole)
     {
-      // 初始位置已经是有效栅格（无盲区存在），无需处理，结束流程
       startup_fill_finished = true;
-      ROS_INFO("No startup lidar blind spot detected; no completion applied");
+
+      ROS_INFO(
+          "Startup area already has complete "
+          "elevation coverage");
     }
     else
     {
-      // 填充失败（盲区未闭合、范围超限或地图尚未加载完整），累加尝试次数
       ++startup_hole_attempts;
-      if (startup_hole_attempts >= startup_hole_max_attempts)
+
+      const char *failure_reason = "unknown";
+
+      switch (fill_result)
       {
-        // 达到最大尝试上限，判定此区域无法安全填充，放弃并保持其未知状态
+      case StartupHoleFillResult::kTooLarge:
+        failure_reason = "too_many_invalid_cells";
+        break;
+
+      case StartupHoleFillResult::kInsufficientBoundary:
+        failure_reason = "insufficient_valid_boundary";
+        break;
+
+      case StartupHoleFillResult::kInvalidMap:
+        failure_reason = "invalid_map_or_parameters";
+        break;
+
+      case StartupHoleFillResult::kNotClosed:
+        // 新逻辑不会返回该结果，保留只是兼容原枚举。
+        failure_reason = "not_closed";
+        break;
+
+      default:
+        break;
+      }
+
+      ROS_WARN_THROTTLE(
+          1.0,
+          "Startup blind-area filling attempt "
+          "%d/%d failed: %s",
+          startup_hole_attempts,
+          startup_hole_max_attempts,
+          failure_reason);
+
+      if (startup_hole_attempts >=
+          startup_hole_max_attempts)
+      {
         startup_fill_finished = true;
-        ROS_WARN("Startup hole was not a safe closed component after %d attempts; leaving it unknown", startup_hole_attempts);
+
+        ROS_WARN(
+            "Startup blind-area filling stopped "
+            "after %d attempts",
+            startup_hole_attempts);
       }
     }
   }

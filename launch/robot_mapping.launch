@@ -1,272 +1,274 @@
 <?xml version="1.0"?>
 <!-- Complete launch configuration with package-local traversability CSV output. -->
 <launch>
-    <arg name="ns" default="vehicle0" />
+     <arg name="ns" default="vehicle0" />
 
-    <!-- Platform type selects the corresponding fine traversability layer. -->
-    <!-- <arg name="vehicle_type" default="wheeled" /> -->
-    <arg name="vehicle_type" default="wheeled" />
-    <arg name="publish_traversability_cloud" default="true" />
-    <arg name="traversability_cloud_topic" default="local_traversability_cloud" />
+     <!-- Platform type selects the corresponding fine traversability layer. -->
+     <!-- <arg name="vehicle_type" default="wheeled" /> -->
+     <arg name="vehicle_type" default="wheeled" />
+     <arg name="publish_traversability_cloud" default="true" />
+     <arg name="traversability_cloud_topic" default="local_traversability_cloud" />
 
-    <!-- Publish PlaneMap-compatible intensity values:
+     <!-- Publish PlaneMap-compatible intensity values:
          platform cost <= threshold -> 0.2, otherwise -> 1.0. -->
-    <arg name="terrain_map_cost_threshold" default="0.98" />
+     <arg name="terrain_map_cost_threshold" default="0.98" />
 
-    <!-- Used only when both terrain elevation and BGK elevation are unknown. -->
-    <arg name="unknown_height_offset" default="0.0" />
-    <arg name="frame_id" default="map" />
-    <arg name="queue_size" default="10" />
-    <arg name="debug_mode" default="false" />
-    <arg name="max_range" default="25.0" />
-    <arg name="min_range" default="0.1" />
-    <arg name="min_z" default="-3.0" />
-    <arg name="max_z" default="1.3" />
-    <arg name="map_resolution" default="0.3" />
-    <arg name="map_length_x" default="1000.0" />
-    <arg name="map_length_y" default="1000.0" />
-    <arg name="local_map_size_x" default="7.5" />
-    <arg name="local_map_size_y" default="7.5" />
-    <arg name="bgk_kernel_size" default="0.6" />
+     <!-- Used only when both terrain elevation and BGK elevation are unknown. -->
+     <arg name="unknown_height_offset" default="0.0" />
+     <arg name="frame_id" default="map" />
+     <arg name="queue_size" default="10" />
+     <arg name="debug_mode" default="false" />
+     <arg name="max_range" default="25.0" />
+     <arg name="min_range" default="0.1" />
+     <arg name="min_z" default="-3.0" />
+     <arg name="max_z" default="1.3" />
+     <arg name="map_resolution" default="0.3" />
+     <arg name="map_length_x" default="1000.0" />
+     <arg name="map_length_y" default="1000.0" />
+     <arg name="local_map_size_x" default="7.5" />
+     <arg name="local_map_size_y" default="7.5" />
+     <arg name="bgk_kernel_size" default="0.6" />
 
-    <!-- Fill only a small closed unknown component at the initial pose. -->
-    <arg name="enable_startup_hole_fill" default="true" />
-    <arg name="startup_hole_radius" default="5.0" />
-    <arg name="startup_hole_max_cells" default="200" />
-    <arg name="startup_hole_min_boundary_cells" default="12" />
-    <arg name="startup_hole_max_attempts" default="30" />
+     <!-- Fill only a small closed unknown component at the initial pose. -->
+     <arg name="enable_startup_hole_fill" default="true"/>
+     <arg name="startup_hole_radius" default="3.3"/>
+     <arg name="startup_hole_boundary_width" default="0.9"/>
+     <arg name="startup_hole_max_cells" default="800"/>
+     <arg name="startup_hole_min_boundary_cells" default="12"/>
+     <arg name="startup_hole_max_attempts" default="100"/>
 
-    <arg name="slope_threshold" default="0.3" />
-    <arg name="roughness_threshold" default="0.04" />
-    <arg name="step_threshold" default="0.4" />
-    <arg name="init_trav_threshold" default="0.5" />
-    <arg name="normal_estimation_radius" default="0.8" />
-    <arg name="step_radius" default="0.6" />
-    <arg name="min_normal_points" default="6" />
-    <arg name="thread_count" default="4" />
-    <arg name="wheeled_model_path" default="$(find obstacle_mapping)/test_map/vehicles/wheeled_car.csv" />
-    <arg name="tracked_model_path" default="$(find obstacle_mapping)/test_map/vehicles/tracked_car.csv" />
-    <arg name="robot_rows" default="9" />
-    <arg name="robot_cols" default="11" />
-    <arg name="robot_model_resolution" default="0.2" />
-    <arg name="touch_gap_threshold" default="0.05" />
-    <arg name="collision_gap_threshold" default="0.1" />
-    <arg name="max_iterations" default="50" />
-    <arg name="fine_min_support_points" default="3" />
-    <arg name="fine_max_rotation_step_deg" default="5.0" />
-    <arg name="fine_max_pose_tilt_deg" default="60.0" />
-    <arg name="fine_heading_samples" default="4" />
+     <arg name="slope_threshold" default="0.3" />
+     <arg name="roughness_threshold" default="0.04" />
+     <arg name="step_threshold" default="0.4" />
+     <arg name="init_trav_threshold" default="0.5" />
+     <arg name="normal_estimation_radius" default="0.8" />
+     <arg name="step_radius" default="0.6" />
+     <arg name="min_normal_points" default="6" />
+     <arg name="thread_count" default="4" />
+     <arg name="wheeled_model_path" default="$(find obstacle_mapping)/test_map/vehicles/wheeled_car.csv" />
+     <arg name="tracked_model_path" default="$(find obstacle_mapping)/test_map/vehicles/tracked_car.csv" />
+     <arg name="robot_rows" default="9" />
+     <arg name="robot_cols" default="11" />
+     <arg name="robot_model_resolution" default="0.2" />
+     <arg name="touch_gap_threshold" default="0.05" />
+     <arg name="collision_gap_threshold" default="0.1" />
+     <arg name="max_iterations" default="50" />
+     <arg name="fine_min_support_points" default="3" />
+     <arg name="fine_max_rotation_step_deg" default="5.0" />
+     <arg name="fine_max_pose_tilt_deg" default="60.0" />
+     <arg name="fine_heading_samples" default="4" />
 
-    <!-- Wheeled-platform capability and geometry-cost parameters. -->
-    <arg name="wheeled_slope_limit_deg" default="30.0" />
-    <arg name="wheeled_roughness_limit" default="0.04" />
-    <arg name="wheeled_step_limit_m" default="0.10" />
-    <arg name="wheeled_geo_slope_weight" default="0.33" />
-    <arg name="wheeled_geo_roughness_weight" default="0.33" />
-    <arg name="wheeled_geo_step_weight" default="0.33" />
-    <arg name="wheeled_efficiency_flat_penalty" default="0.00" />
-    <arg name="wheeled_efficiency_rough_penalty" default="0.15" />
-    <arg name="wheeled_efficiency_rough_bonus" default="0.00" />
+     <!-- Wheeled-platform capability and geometry-cost parameters. -->
+     <arg name="wheeled_slope_limit_deg" default="25.0" />
+     <arg name="wheeled_roughness_limit" default="0.10" />
+     <arg name="wheeled_step_limit_m" default="0.10" />
+     <arg name="wheeled_geo_slope_weight" default="0.33" />
+     <arg name="wheeled_geo_roughness_weight" default="0.33" />
+     <arg name="wheeled_geo_step_weight" default="0.33" />
+     <arg name="wheeled_efficiency_flat_penalty" default="0.00" />
+     <arg name="wheeled_efficiency_rough_penalty" default="0.15" />
+     <arg name="wheeled_efficiency_rough_bonus" default="0.00" />
 
-    <!-- Tracked-platform capability and geometry-cost parameters. -->
-    <arg name="tracked_slope_limit_deg" default="35.0" />
-    <arg name="tracked_roughness_limit" default="0.08" />
-    <arg name="tracked_step_limit_m" default="0.20" />
-    <arg name="tracked_geo_slope_weight" default="0.33" />
-    <arg name="tracked_geo_roughness_weight" default="0.33" />
-    <arg name="tracked_geo_step_weight" default="0.33" />
-    <arg name="tracked_efficiency_flat_penalty" default="0.04" />
-    <arg name="tracked_efficiency_rough_penalty" default="0.00" />
-    <arg name="tracked_efficiency_rough_bonus" default="0.12" />
+     <!-- Tracked-platform capability and geometry-cost parameters. -->
+     <arg name="tracked_slope_limit_deg" default="35.0" />
+     <arg name="tracked_roughness_limit" default="0.14" />
+     <arg name="tracked_step_limit_m" default="0.15" />
+     <arg name="tracked_geo_slope_weight" default="0.33" />
+     <arg name="tracked_geo_roughness_weight" default="0.33" />
+     <arg name="tracked_geo_step_weight" default="0.33" />
+     <arg name="tracked_efficiency_flat_penalty" default="0.04" />
+     <arg name="tracked_efficiency_rough_penalty" default="0.00" />
+     <arg name="tracked_efficiency_rough_bonus" default="0.12" />
 
-    <!-- Pose quality and terrain-dependent motion-efficiency fusion. -->
-    <arg name="pose_angle_weight" default="0.65" />
-    <arg name="pose_support_weight" default="0.20" />
-    <arg name="pose_heading_weight" default="0.15" />
-    <arg name="mobility_efficiency_weight" default="1.00" />
-    <arg name="efficiency_slope_reference_deg" default="35.0" />
-    <arg name="efficiency_roughness_reference" default="0.08" />
-    <arg name="efficiency_step_reference_m" default="0.30" />
-    <arg name="severity_slope_weight" default="0.35" />
-    <arg name="severity_roughness_weight" default="0.25" />
-    <arg name="severity_step_weight" default="0.40" />
+     <!-- Pose quality and terrain-dependent motion-efficiency fusion. -->
+     <arg name="pose_angle_weight" default="0.65" />
+     <arg name="pose_support_weight" default="0.20" />
+     <arg name="pose_heading_weight" default="0.15" />
+     <arg name="mobility_efficiency_weight" default="1.00" />
+     <arg name="efficiency_slope_reference_deg" default="35.0" />
+     <arg name="efficiency_roughness_reference" default="0.08" />
+     <arg name="efficiency_step_reference_m" default="0.30" />
+     <arg name="severity_slope_weight" default="0.35" />
+     <arg name="severity_roughness_weight" default="0.25" />
+     <arg name="severity_step_weight" default="0.40" />
 
-    <arg name="enable_fine_traversability" default="true" />
-    <arg name="enable_incremental_geom" default="true" />
-    <arg name="enable_incremental_step" default="true" />
-    <arg name="enable_incremental_trav" default="true" />
+     <arg name="enable_fine_traversability" default="true" />
+     <arg name="enable_incremental_geom" default="true" />
+     <arg name="enable_incremental_step" default="true" />
+     <arg name="enable_incremental_trav" default="true" />
 
-    <!-- Only medium/high-risk uncertain cells enter expensive pose/collision checking. -->
-    <arg name="fine_trav_min" default="0.55" />
-    <arg name="fine_trav_max" default="0.9" />
-    <arg name="fine_slope_min" default="0.50" />
-    <arg name="fine_slope_max" default="0.95" />
-    <arg name="fine_roughness_min" default="0.40" />
-    <arg name="fine_roughness_max" default="1.0" />
-    <arg name="fine_step_min" default="0.40" />
-    <arg name="fine_step_max" default="1.0" />
-    <arg name="fine_roll_threshold_deg" default="30.0" />
-    <arg name="fine_pitch_threshold_deg" default="30.0" />
+     <!-- Only medium/high-risk uncertain cells enter expensive pose/collision checking. -->
+     <arg name="fine_trav_min" default="0.55" />
+     <arg name="fine_trav_max" default="0.9" />
+     <arg name="fine_slope_min" default="0.50" />
+     <arg name="fine_slope_max" default="0.95" />
+     <arg name="fine_roughness_min" default="0.40" />
+     <arg name="fine_roughness_max" default="1.0" />
+     <arg name="fine_step_min" default="0.40" />
+     <arg name="fine_step_max" default="1.0" />
+     <arg name="fine_roll_threshold_deg" default="30.0" />
+     <arg name="fine_pitch_threshold_deg" default="30.0" />
 
-    <!-- Fine traversability diagnosis. The CSV is truncated at each launch. -->
-    <arg name="enable_fine_debug_csv" default="false" />
-    <arg name="fine_debug_csv_path" default="$(find obstacle_mapping)/$(arg ns)_fine_traversability_debug.csv" />
-    <arg name="fine_debug_csv_append" default="false" />
-    <arg name="fine_debug_csv_max_cycles" default="50" />
+     <!-- Fine traversability diagnosis. The CSV is truncated at each launch. -->
+     <arg name="enable_fine_debug_csv" default="false" />
+     <arg name="fine_debug_csv_path" default="$(find obstacle_mapping)/$(arg ns)_fine_traversability_debug.csv" />
+     <arg name="fine_debug_csv_append" default="false" />
+     <arg name="fine_debug_csv_max_cycles" default="50" />
 
-    <arg name="skip_old_messages" default="true" />
+     <arg name="skip_old_messages" default="true" />
 
-    <!-- Incremental fine-map invalidation. A cell and its vehicle-footprint
+     <!-- Incremental fine-map invalidation. A cell and its vehicle-footprint
          neighborhood are recomputed only after a meaningful height change. -->
-    <arg name="fine_height_change_threshold" default="0.02" />
-    <!-- Negative lets the node derive a safe radius from the vehicle footprint. -->
-    <arg name="fine_recompute_radius" default="-1.0" />
+     <arg name="fine_height_change_threshold" default="0.02" />
+     <!-- Negative lets the node derive a safe radius from the vehicle footprint. -->
+     <arg name="fine_recompute_radius" default="-1.0" />
 
-    <!-- Global explored grid map publication. The underlying 1000 m x 1000 m
+     <!-- Global explored grid map publication. The underlying 1000 m x 1000 m
          map is always retained; this controls the low-rate global ROS topic. -->
-    <arg name="global_gridmap_topic" default="global_trav_map" />
-    <arg name="global_publish_every_n" default="50" />
+     <arg name="global_gridmap_topic" default="global_trav_map" />
+     <arg name="global_publish_every_n" default="50" />
 
-    <param name="vehicle_type" value="$(arg vehicle_type)" />
+     <param name="vehicle_type" value="$(arg vehicle_type)" />
 
-    <node name="multi_robot_mapping_node" pkg="obstacle_mapping" type="multi_robot_mapping_node" output="screen">
-        <!-- Topic and frame settings -->
-        <param name="scan_topic" value="registered_scan_accum_5" />
-        <param name="odom_topic" value="state_estimation" />
-        <param name="frame_id" value="$(arg frame_id)" />
-        <param name="queue_size" value="$(arg queue_size)" />
+     <node name="multi_robot_mapping_node" pkg="obstacle_mapping" type="multi_robot_mapping_node" output="screen">
+          <!-- Topic and frame settings -->
+          <param name="scan_topic" value="registered_scan_accum_5" />
+          <param name="odom_topic" value="state_estimation" />
+          <param name="frame_id" value="$(arg frame_id)" />
+          <param name="queue_size" value="$(arg queue_size)" />
 
-        <!-- Vehicle and debug settings -->
-        <param name="debug_mode" value="$(arg debug_mode)" />
+          <!-- Vehicle and debug settings -->
+          <param name="debug_mode" value="$(arg debug_mode)" />
 
-        <param name="publish_traversability_cloud" value="$(arg publish_traversability_cloud)" />
-        <param name="traversability_cloud_topic" value="$(arg traversability_cloud_topic)" />
-        <param name="terrain_map_cost_threshold" value="$(arg terrain_map_cost_threshold)" />
-        <param name="unknown_height_offset" value="$(arg unknown_height_offset)" />
+          <param name="publish_traversability_cloud" value="$(arg publish_traversability_cloud)" />
+          <param name="traversability_cloud_topic" value="$(arg traversability_cloud_topic)" />
+          <param name="terrain_map_cost_threshold" value="$(arg terrain_map_cost_threshold)" />
+          <param name="unknown_height_offset" value="$(arg unknown_height_offset)" />
 
-        <!-- Sensor range parameters -->
-        <param name="max_range" value="$(arg max_range)" />
-        <param name="min_range" value="$(arg min_range)" />
+          <!-- Sensor range parameters -->
+          <param name="max_range" value="$(arg max_range)" />
+          <param name="min_range" value="$(arg min_range)" />
 
-        <!-- Point cloud Z range parameters -->
-        <param name="min_z" value="$(arg min_z)" />
-        <param name="max_z" value="$(arg max_z)" />
+          <!-- Point cloud Z range parameters -->
+          <param name="min_z" value="$(arg min_z)" />
+          <param name="max_z" value="$(arg max_z)" />
 
-        <!-- Map parameters -->
-        <param name="map_resolution" value="$(arg map_resolution)" />
-        <param name="map_length_x" value="$(arg map_length_x)" />
-        <param name="map_length_y" value="$(arg map_length_y)" />
+          <!-- Map parameters -->
+          <param name="map_resolution" value="$(arg map_resolution)" />
+          <param name="map_length_x" value="$(arg map_length_x)" />
+          <param name="map_length_y" value="$(arg map_length_y)" />
 
-        <!-- Local map visualization size -->
-        <param name="local_map_size_x" value="$(arg local_map_size_x)" />
-        <param name="local_map_size_y" value="$(arg local_map_size_y)" />
+          <!-- Local map visualization size -->
+          <param name="local_map_size_x" value="$(arg local_map_size_x)" />
+          <param name="local_map_size_y" value="$(arg local_map_size_y)" />
 
-        <!-- BGK inference kernel size -->
-        <param name="bgk_kernel_size" value="$(arg bgk_kernel_size)" />
+          <!-- BGK inference kernel size -->
+          <param name="bgk_kernel_size" value="$(arg bgk_kernel_size)" />
 
-        <!-- Conditional initial-position blind-spot completion -->
-        <param name="enable_startup_hole_fill" value="$(arg enable_startup_hole_fill)" />
-        <param name="startup_hole_radius" value="$(arg startup_hole_radius)" />
-        <param name="startup_hole_max_cells" value="$(arg startup_hole_max_cells)" />
-        <param name="startup_hole_min_boundary_cells" value="$(arg startup_hole_min_boundary_cells)" />
-        <param name="startup_hole_max_attempts" value="$(arg startup_hole_max_attempts)" />
+          <!-- Conditional initial-position blind-spot completion -->
+          <param name="enable_startup_hole_fill" value="$(arg enable_startup_hole_fill)"/>
+          <param name="startup_hole_radius" value="$(arg startup_hole_radius)"/>
+          <param name="startup_hole_boundary_width" value="$(arg startup_hole_boundary_width)"/>
+          <param name="startup_hole_max_cells" value="$(arg startup_hole_max_cells)"/>
+          <param name="startup_hole_min_boundary_cells" value="$(arg startup_hole_min_boundary_cells)"/>
+          <param name="startup_hole_max_attempts" value="$(arg startup_hole_max_attempts)"/>
+          
+          <!-- Traversability thresholds -->
+          <param name="slope_threshold" value="$(arg slope_threshold)" />
+          <param name="roughness_threshold" value="$(arg roughness_threshold)" />
+          <param name="step_threshold" value="$(arg step_threshold)" />
+          <param name="init_trav_threshold" value="$(arg init_trav_threshold)" />
 
-        <!-- Traversability thresholds -->
-        <param name="slope_threshold" value="$(arg slope_threshold)" />
-        <param name="roughness_threshold" value="$(arg roughness_threshold)" />
-        <param name="step_threshold" value="$(arg step_threshold)" />
-        <param name="init_trav_threshold" value="$(arg init_trav_threshold)" />
+          <!-- Feature mapping parameters -->
+          <param name="normal_estimation_radius" value="$(arg normal_estimation_radius)" />
+          <param name="step_radius" value="$(arg step_radius)" />
+          <param name="min_normal_points" value="$(arg min_normal_points)" />
+          <param name="thread_count" value="$(arg thread_count)" />
 
-        <!-- Feature mapping parameters -->
-        <param name="normal_estimation_radius" value="$(arg normal_estimation_radius)" />
-        <param name="step_radius" value="$(arg step_radius)" />
-        <param name="min_normal_points" value="$(arg min_normal_points)" />
-        <param name="thread_count" value="$(arg thread_count)" />
+          <!-- Vehicle model parameters for fine-grained traversability -->
+          <param name="wheeled_model_path" value="$(arg wheeled_model_path)" />
+          <param name="tracked_model_path" value="$(arg tracked_model_path)" />
+          <param name="robot_rows" value="$(arg robot_rows)" />
+          <param name="robot_cols" value="$(arg robot_cols)" />
+          <param name="robot_model_resolution" value="$(arg robot_model_resolution)" />
+          <param name="touch_gap_threshold" value="$(arg touch_gap_threshold)" />
+          <param name="collision_gap_threshold" value="$(arg collision_gap_threshold)" />
+          <param name="max_iterations" value="$(arg max_iterations)" />
+          <param name="fine_min_support_points" value="$(arg fine_min_support_points)" />
+          <param name="fine_max_rotation_step_deg" value="$(arg fine_max_rotation_step_deg)" />
+          <param name="fine_max_pose_tilt_deg" value="$(arg fine_max_pose_tilt_deg)" />
+          <param name="fine_heading_samples" value="$(arg fine_heading_samples)" />
 
-        <!-- Vehicle model parameters for fine-grained traversability -->
-        <param name="wheeled_model_path" value="$(arg wheeled_model_path)" />
-        <param name="tracked_model_path" value="$(arg tracked_model_path)" />
-        <param name="robot_rows" value="$(arg robot_rows)" />
-        <param name="robot_cols" value="$(arg robot_cols)" />
-        <param name="robot_model_resolution" value="$(arg robot_model_resolution)" />
-        <param name="touch_gap_threshold" value="$(arg touch_gap_threshold)" />
-        <param name="collision_gap_threshold" value="$(arg collision_gap_threshold)" />
-        <param name="max_iterations" value="$(arg max_iterations)" />
-        <param name="fine_min_support_points" value="$(arg fine_min_support_points)" />
-        <param name="fine_max_rotation_step_deg" value="$(arg fine_max_rotation_step_deg)" />
-        <param name="fine_max_pose_tilt_deg" value="$(arg fine_max_pose_tilt_deg)" />
-        <param name="fine_heading_samples" value="$(arg fine_heading_samples)" />
+          <!-- Platform-dependent geometry capabilities and cost weights -->
+          <param name="wheeled_slope_limit_deg" value="$(arg wheeled_slope_limit_deg)" />
+          <param name="wheeled_roughness_limit" value="$(arg wheeled_roughness_limit)" />
+          <param name="wheeled_step_limit_m" value="$(arg wheeled_step_limit_m)" />
+          <param name="wheeled_geo_slope_weight" value="$(arg wheeled_geo_slope_weight)" />
+          <param name="wheeled_geo_roughness_weight" value="$(arg wheeled_geo_roughness_weight)" />
+          <param name="wheeled_geo_step_weight" value="$(arg wheeled_geo_step_weight)" />
+          <param name="wheeled_efficiency_flat_penalty" value="$(arg wheeled_efficiency_flat_penalty)" />
+          <param name="wheeled_efficiency_rough_penalty" value="$(arg wheeled_efficiency_rough_penalty)" />
+          <param name="wheeled_efficiency_rough_bonus" value="$(arg wheeled_efficiency_rough_bonus)" />
 
-        <!-- Platform-dependent geometry capabilities and cost weights -->
-        <param name="wheeled_slope_limit_deg" value="$(arg wheeled_slope_limit_deg)" />
-        <param name="wheeled_roughness_limit" value="$(arg wheeled_roughness_limit)" />
-        <param name="wheeled_step_limit_m" value="$(arg wheeled_step_limit_m)" />
-        <param name="wheeled_geo_slope_weight" value="$(arg wheeled_geo_slope_weight)" />
-        <param name="wheeled_geo_roughness_weight" value="$(arg wheeled_geo_roughness_weight)" />
-        <param name="wheeled_geo_step_weight" value="$(arg wheeled_geo_step_weight)" />
-        <param name="wheeled_efficiency_flat_penalty" value="$(arg wheeled_efficiency_flat_penalty)" />
-        <param name="wheeled_efficiency_rough_penalty" value="$(arg wheeled_efficiency_rough_penalty)" />
-        <param name="wheeled_efficiency_rough_bonus" value="$(arg wheeled_efficiency_rough_bonus)" />
+          <param name="tracked_slope_limit_deg" value="$(arg tracked_slope_limit_deg)" />
+          <param name="tracked_roughness_limit" value="$(arg tracked_roughness_limit)" />
+          <param name="tracked_step_limit_m" value="$(arg tracked_step_limit_m)" />
+          <param name="tracked_geo_slope_weight" value="$(arg tracked_geo_slope_weight)" />
+          <param name="tracked_geo_roughness_weight" value="$(arg tracked_geo_roughness_weight)" />
+          <param name="tracked_geo_step_weight" value="$(arg tracked_geo_step_weight)" />
+          <param name="tracked_efficiency_flat_penalty" value="$(arg tracked_efficiency_flat_penalty)" />
+          <param name="tracked_efficiency_rough_penalty" value="$(arg tracked_efficiency_rough_penalty)" />
+          <param name="tracked_efficiency_rough_bonus" value="$(arg tracked_efficiency_rough_bonus)" />
 
-        <param name="tracked_slope_limit_deg" value="$(arg tracked_slope_limit_deg)" />
-        <param name="tracked_roughness_limit" value="$(arg tracked_roughness_limit)" />
-        <param name="tracked_step_limit_m" value="$(arg tracked_step_limit_m)" />
-        <param name="tracked_geo_slope_weight" value="$(arg tracked_geo_slope_weight)" />
-        <param name="tracked_geo_roughness_weight" value="$(arg tracked_geo_roughness_weight)" />
-        <param name="tracked_geo_step_weight" value="$(arg tracked_geo_step_weight)" />
-        <param name="tracked_efficiency_flat_penalty" value="$(arg tracked_efficiency_flat_penalty)" />
-        <param name="tracked_efficiency_rough_penalty" value="$(arg tracked_efficiency_rough_penalty)" />
-        <param name="tracked_efficiency_rough_bonus" value="$(arg tracked_efficiency_rough_bonus)" />
+          <param name="step_robust_quantile" value="0.90" />
+          <param name="step_min_valid_neighbors" value="3" />
+          <param name="step_noise_margin_m" value="0.05" />
 
-        <param name="step_robust_quantile" value="0.90" />
-        <param name="step_min_valid_neighbors" value="3" />
-        <param name="step_noise_margin_m" value="0.05" />
+          <param name="pose_angle_weight" value="$(arg pose_angle_weight)" />
+          <param name="pose_support_weight" value="$(arg pose_support_weight)" />
+          <param name="pose_heading_weight" value="$(arg pose_heading_weight)" />
+          <param name="mobility_efficiency_weight" value="$(arg mobility_efficiency_weight)" />
+          <param name="efficiency_slope_reference_deg" value="$(arg efficiency_slope_reference_deg)" />
+          <param name="efficiency_roughness_reference" value="$(arg efficiency_roughness_reference)" />
+          <param name="efficiency_step_reference_m" value="$(arg efficiency_step_reference_m)" />
+          <param name="severity_slope_weight" value="$(arg severity_slope_weight)" />
+          <param name="severity_roughness_weight" value="$(arg severity_roughness_weight)" />
+          <param name="severity_step_weight" value="$(arg severity_step_weight)" />
 
-        <param name="pose_angle_weight" value="$(arg pose_angle_weight)" />
-        <param name="pose_support_weight" value="$(arg pose_support_weight)" />
-        <param name="pose_heading_weight" value="$(arg pose_heading_weight)" />
-        <param name="mobility_efficiency_weight" value="$(arg mobility_efficiency_weight)" />
-        <param name="efficiency_slope_reference_deg" value="$(arg efficiency_slope_reference_deg)" />
-        <param name="efficiency_roughness_reference" value="$(arg efficiency_roughness_reference)" />
-        <param name="efficiency_step_reference_m" value="$(arg efficiency_step_reference_m)" />
-        <param name="severity_slope_weight" value="$(arg severity_slope_weight)" />
-        <param name="severity_roughness_weight" value="$(arg severity_roughness_weight)" />
-        <param name="severity_step_weight" value="$(arg severity_step_weight)" />
+          <!-- Fine-grained traversability computation control -->
+          <param name="enable_fine_traversability" value="$(arg enable_fine_traversability)" />
+          <param name="enable_incremental_geom" value="$(arg enable_incremental_geom)" />
+          <param name="enable_incremental_step" value="$(arg enable_incremental_step)" />
+          <param name="enable_incremental_trav" value="$(arg enable_incremental_trav)" />
+          <param name="fine_height_change_threshold" value="$(arg fine_height_change_threshold)" />
+          <param name="fine_recompute_radius" value="$(arg fine_recompute_radius)" />
 
-        <!-- Fine-grained traversability computation control -->
-        <param name="enable_fine_traversability" value="$(arg enable_fine_traversability)" />
-        <param name="enable_incremental_geom" value="$(arg enable_incremental_geom)" />
-        <param name="enable_incremental_step" value="$(arg enable_incremental_step)" />
-        <param name="enable_incremental_trav" value="$(arg enable_incremental_trav)" />
-        <param name="fine_height_change_threshold" value="$(arg fine_height_change_threshold)" />
-        <param name="fine_recompute_radius" value="$(arg fine_recompute_radius)" />
+          <!-- Fine-grained traversability range parameters -->
+          <param name="fine_trav_min" value="$(arg fine_trav_min)" />
+          <param name="fine_trav_max" value="$(arg fine_trav_max)" />
+          <param name="fine_slope_min" value="$(arg fine_slope_min)" />
+          <param name="fine_slope_max" value="$(arg fine_slope_max)" />
+          <param name="fine_roughness_min" value="$(arg fine_roughness_min)" />
+          <param name="fine_roughness_max" value="$(arg fine_roughness_max)" />
+          <param name="fine_step_min" value="$(arg fine_step_min)" />
+          <param name="fine_step_max" value="$(arg fine_step_max)" />
+          <param name="fine_roll_threshold_deg" value="$(arg fine_roll_threshold_deg)" />
+          <param name="fine_pitch_threshold_deg" value="$(arg fine_pitch_threshold_deg)" />
 
-        <!-- Fine-grained traversability range parameters -->
-        <param name="fine_trav_min" value="$(arg fine_trav_min)" />
-        <param name="fine_trav_max" value="$(arg fine_trav_max)" />
-        <param name="fine_slope_min" value="$(arg fine_slope_min)" />
-        <param name="fine_slope_max" value="$(arg fine_slope_max)" />
-        <param name="fine_roughness_min" value="$(arg fine_roughness_min)" />
-        <param name="fine_roughness_max" value="$(arg fine_roughness_max)" />
-        <param name="fine_step_min" value="$(arg fine_step_min)" />
-        <param name="fine_step_max" value="$(arg fine_step_max)" />
-        <param name="fine_roll_threshold_deg" value="$(arg fine_roll_threshold_deg)" />
-        <param name="fine_pitch_threshold_deg" value="$(arg fine_pitch_threshold_deg)" />
+          <!-- Per-cell and per-cycle fine traversability diagnostics -->
+          <param name="enable_fine_debug_csv" value="$(arg enable_fine_debug_csv)" />
+          <param name="fine_debug_csv_path" value="$(arg fine_debug_csv_path)" />
+          <param name="fine_debug_csv_append" value="$(arg fine_debug_csv_append)" />
+          <param name="fine_debug_csv_max_cycles" value="$(arg fine_debug_csv_max_cycles)" />
 
-        <!-- Per-cell and per-cycle fine traversability diagnostics -->
-        <param name="enable_fine_debug_csv" value="$(arg enable_fine_debug_csv)" />
-        <param name="fine_debug_csv_path" value="$(arg fine_debug_csv_path)" />
-        <param name="fine_debug_csv_append" value="$(arg fine_debug_csv_append)" />
-        <param name="fine_debug_csv_max_cycles" value="$(arg fine_debug_csv_max_cycles)" />
+          <!-- Asynchronous processing parameters -->
+          <param name="skip_old_messages" value="$(arg skip_old_messages)" />
 
-        <!-- Asynchronous processing parameters -->
-        <param name="skip_old_messages" value="$(arg skip_old_messages)" />
+          <!-- Persistent global explored map output -->
+          <param name="global_gridmap_topic" value="$(arg global_gridmap_topic)" />
+          <param name="global_publish_every_n" value="$(arg global_publish_every_n)" />
+     </node>
 
-        <!-- Persistent global explored map output -->
-        <param name="global_gridmap_topic" value="$(arg global_gridmap_topic)" />
-        <param name="global_publish_every_n" value="$(arg global_publish_every_n)" />
-    </node>
-
-    <!-- RViz visualization -->
-    <node name="rviz" pkg="rviz" type="rviz" args="-d $(find obstacle_mapping)/rviz/show_multi_robot_$(arg ns).rviz" output="screen" />
+     <!-- RViz visualization -->
+     <node name="rviz" pkg="rviz" type="rviz" args="-d $(find obstacle_mapping)/rviz/show_multi_robot_$(arg ns).rviz" output="screen" />
 </launch>
