@@ -10,6 +10,7 @@
 
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud2.h>
+#include <geometry_msgs/PointStamped.h>
 #include <nav_msgs/Odometry.h>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
@@ -83,6 +84,7 @@ private:
     ros::Subscriber odometry_sub_;
     ros::Publisher cloud_pub_;
     ros::Publisher gridmap_pub_;
+    ros::Publisher viewpoint_origin_publisher;
     ros::Timer publish_timer_; // 用于固定频率发布的定时器
 
     // // 使用 message_filters 进行时间同步
@@ -90,20 +92,6 @@ private:
     std::shared_ptr<message_filters::Subscriber<sensor_msgs::PointCloud2>> cloud_filter_sub_;
     std::shared_ptr<message_filters::Subscriber<nav_msgs::Odometry>> odom_filter_sub_;
     std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;
-
-    // // 4路 ApproximateTime policy（顺序必须和 callback 参数一致）
-    // using SyncPolicy = message_filters::sync_policies::ApproximateTime<
-    //     sensor_msgs::PointCloud2, nav_msgs::Odometry,
-    //     sensor_msgs::PointCloud2, sensor_msgs::PointCloud2>;
-
-    // std::shared_ptr<message_filters::Subscriber<sensor_msgs::PointCloud2>> cloud_filter_sub_;
-    // std::shared_ptr<message_filters::Subscriber<nav_msgs::Odometry>> odom_filter_sub_;
-
-    // // // 新增两个点云订阅
-    // std::shared_ptr<message_filters::Subscriber<sensor_msgs::PointCloud2>> terrain_filter_sub_;
-    // std::shared_ptr<message_filters::Subscriber<sensor_msgs::PointCloud2>> terrain_ext_filter_sub_;
-
-    // std::shared_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;
 
     // 发布线程控制
     std::thread publish_thread_;

@@ -2,7 +2,7 @@
  * @Author: lee lizw_0304@163.com
  * @Date: 2026-07-15 21:21:31
  * @LastEditors: lee lizw_0304@163.com
- * @LastEditTime: 2026-07-21 10:59:26
+ * @LastEditTime: 2026-07-21 11:13:33
  * @FilePath: /src/obstacle_mapping/src/multi_robot_mapping.cpp
  * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
  */
@@ -1037,6 +1037,11 @@ Mapping::Mapping(ros::NodeHandle &nh, ros::NodeHandle &pnh)
   // Create publisher for grid map
   gridmap_pub_ = nh_.advertise<grid_map_msgs::GridMap>("trav_map", 10);
 
+  viewpoint_origin_publisher = nh_.advertise<geometry_msgs::PointStamped>(origin_topic_, 1, true);
+
+  ROS_INFO("Publishing inferred viewpoint origin on: %s",
+           viewpoint_origin_publisher.getTopic().c_str());
+
   const std::string vehicle_namespace = nh_.getNamespace();
 
   const std::string vehicle_type_param =
@@ -1160,7 +1165,8 @@ void Mapping::loadParameters()
   // Load topic settings
   pnh_.param<std::string>("scan_topic", scan_topic_, "registered_scan");
   pnh_.param<std::string>("odom_topic", odom_topic_, "state_estimation");
-  pnh_.param<std::string>("origin_topic", origin_topic_, "tare_planner_node/viewpoint_origin");
+  pnh_.param<std::string>("origin_topic", origin_topic_, "traverability_viewpoint_origin");
+
   pnh_.param<std::string>("viewpoint_vis_topic", viewpoint_vis_topic_, "viewpoint_vis_cloud");
   pnh_.param<std::string>("frame_id", frame_id_, "map");
   pnh_.param<int>("queue_size", queue_size_, 200);
@@ -1662,6 +1668,29 @@ void Mapping::processingThreadFunc()
       // ViewPointManager's initial origin and rollover before the map produced
       // from the same scan is published, without waiting for viewpoint_origin.
       viewpointGridAlignment().update(task.position, task.timestamp);
+
+      // 每处理一组同步点云和里程计，都发布一次当前viewpoint原点。
+      ViewpointGridSnapshot origin_snapshot;
+
+      if (viewpointGridAlignment().snapshot(origin_snapshot))
+      {
+        geometry_msgs::PointStamped origin_msg;
+
+        // 与当前处理的点云和里程计使用相同时间戳。
+        origin_msg.header.stamp = task.timestamp;
+        origin_msg.header.frame_id = frame_id_;
+
+        origin_msg.point.x = origin_snapshot.origin.x();
+        origin_msg.point.y = origin_snapshot.origin.y();
+        origin_msg.point.z = origin_snapshot.origin.z();
+
+        viewpoint_origin_publisher.publish(origin_msg);
+
+        ROS_INFO_STREAM_THROTTLE(1.0, "Published viewpoint origin: ["
+                                          << origin_msg.point.x << ", "
+                                          << origin_msg.point.y << ", "
+                                          << origin_msg.point.z << "]");
+      }
 
       // ------------------------------------------
       // [B3] 处理完立刻发布一次栅格地图
