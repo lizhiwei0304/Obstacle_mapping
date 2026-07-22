@@ -9,13 +9,8 @@ from itertools import chain
 from sensor_msgs.msg import PointCloud2
 from std_msgs.msg import Bool
 import sensor_msgs.point_cloud2 as pc2
-import message_filters
 
 # ------------------------- Helpers: fields -------------------------
-
-
-def fields_signature(fields):
-    return [(f.name, f.offset, f.datatype, f.count) for f in fields]
 
 
 def field_names_from_msg(msg):
@@ -65,61 +60,6 @@ def voxel_downsample(points, leaf, use_intensity=False):
     return list(vox.values())
 
 
-# ------------------------- Terrain merge -------------------------
-
-
-def merge_clouds(msg_a, msg_b, out_frame_id=None):
-    if msg_a is None or msg_b is None:
-        return None
-    if not msg_a.data or not msg_b.data:
-        return None
-
-    frame_a = msg_a.header.frame_id
-    frame_b = msg_b.header.frame_id
-    if out_frame_id is None:
-        out_frame_id = frame_a
-
-    # 不做 TF：frame 不同直接不合
-    if frame_a != frame_b:
-        rospy.logwarn_throttle(
-            2.0,
-            f"[merge_clouds] frame_id mismatch: A={frame_a}, B={frame_b}. Skip merge (no TF).",
-        )
-        return None
-
-    sig_a = fields_signature(msg_a.fields)
-    sig_b = fields_signature(msg_b.fields)
-
-    if sig_a == sig_b:
-        field_names = field_names_from_msg(msg_a)
-        out_fields = copy.deepcopy(msg_a.fields)
-    else:
-        names_a = field_names_from_msg(msg_a)
-        names_b = set(field_names_from_msg(msg_b))
-        field_names = [n for n in names_a if n in names_b]
-        if not field_names:
-            rospy.logerr_throttle(2.0, "[merge_clouds] No common fields. Cannot merge.")
-            return None
-        out_fields = select_fields_by_names(msg_a.fields, field_names)
-        rospy.logwarn_throttle(
-            2.0, f"[merge_clouds] Field mismatch. Use common fields: {field_names}"
-        )
-
-    pts_a = read_points_as_list(msg_a, field_names)
-    pts_b = read_points_as_list(msg_b, field_names)
-
-    header = copy.deepcopy(msg_a.header)
-    header.frame_id = out_frame_id
-    header.stamp = (
-        msg_a.header.stamp
-        if msg_a.header.stamp >= msg_b.header.stamp
-        else msg_b.header.stamp
-    )
-
-    merged_pts = pts_a + pts_b
-    return pc2.create_cloud(header, out_fields, merged_pts)
-
-
 # ------------------------- Node -------------------------
 
 
@@ -130,12 +70,8 @@ class CloudMergerAndAccumulator:
         self.start_sub = None
 
         # 这些等启动后再 init
-        self.pub_terrain_merged = None
         self.pub_scan_accum = None
         self.sub_scan = None
-        self.sub_terrain_a = None
-        self.sub_terrain_b = None
-        self.ats = None
 
         # 缓存/状态
         self.scan_buffer = None
@@ -154,23 +90,13 @@ class CloudMergerAndAccumulator:
         self.voxel_leaf = float(rospy.get_param("~voxel_leaf", 0.1))
         self.prefer_intensity = bool(rospy.get_param("~prefer_intensity", True))
 
-        self.topic_terrain_map = rospy.get_param("~terrain_map", "terrain_map")
-        self.topic_terrain_map_ext = rospy.get_param(
-            "~terrain_map_ext", "terrain_map_ext"
-        )
         self.topic_registered_scan = rospy.get_param(
             "~registered_scan", "registered_scan_filted"
         )
 
-        self.topic_terrain_merged = rospy.get_param(
-            "~terrain_merged_out", "terrain_map_merged"
-        )
         self.topic_scan_accum = rospy.get_param(
             "~registered_scan_accum_out", "registered_scan_accum_10"
         )
-
-        self.sync_slop = float(rospy.get_param("~sync_slop", 0.10))
-        self.sync_queue = int(rospy.get_param("~sync_queue", 10))
 
         if self.wait_for_start:
             self.start_sub = rospy.Subscriber(
@@ -218,27 +144,9 @@ class CloudMergerAndAccumulator:
         self.processing_inited = True
 
         # Publishers
-        self.pub_terrain_merged = rospy.Publisher(
-            self.topic_terrain_merged, PointCloud2, queue_size=1
-        )
         self.pub_scan_accum = rospy.Publisher(
             self.topic_scan_accum, PointCloud2, queue_size=1
         )
-
-        # Terrain map merge (approx sync)
-        self.sub_terrain_a = message_filters.Subscriber(
-            self.topic_terrain_map, PointCloud2
-        )
-        self.sub_terrain_b = message_filters.Subscriber(
-            self.topic_terrain_map_ext, PointCloud2
-        )
-        self.ats = message_filters.ApproximateTimeSynchronizer(
-            [self.sub_terrain_a, self.sub_terrain_b],
-            queue_size=self.sync_queue,
-            slop=self.sync_slop,
-            allow_headerless=False,
-        )
-        self.ats.registerCallback(self.cb_terrain_pair)
 
         # Registered scan accumulation
         self.scan_buffer = deque(maxlen=self.window_size)
@@ -253,16 +161,8 @@ class CloudMergerAndAccumulator:
             f"[CloudMergerAndAccumulator] window_size={self.window_size}, publish_every_n={self.publish_every_n}, voxel_leaf={self.voxel_leaf}"
         )
         rospy.loginfo(
-            f"[Terrain Merge] {self.topic_terrain_map} + {self.topic_terrain_map_ext} -> {self.topic_terrain_merged}"
-        )
-        rospy.loginfo(
             f"[Scan Accum] {self.topic_registered_scan} (x{self.window_size}) -> {self.topic_scan_accum}"
         )
-
-    def cb_terrain_pair(self, msg_map, msg_ext):
-        merged = merge_clouds(msg_map, msg_ext, out_frame_id=msg_map.header.frame_id)
-        if merged is not None:
-            self.pub_terrain_merged.publish(merged)
 
     def cb_registered_scan(self, msg):
         if msg is None or not msg.data:
