@@ -2,7 +2,7 @@
  * @Author: lee lizw_0304@163.com
  * @Date: 2026-07-15 21:21:31
  * @LastEditors: lee lizw_0304@163.com
- * @LastEditTime: 2026-07-21 11:13:33
+ * @LastEditTime: 2026-07-22 16:10:39
  * @FilePath: /src/obstacle_mapping/src/multi_robot_mapping.cpp
  * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
  */
@@ -79,6 +79,15 @@ namespace
   // terrain as free is less conservative than omitting it.
   bool terrain_map_unknown_as_traversable = true;
   ros::Publisher local_trav_cloud_publisher;
+
+  // Height cloud aligned one-to-one with ViewPointManager's rolling XY grid.
+  // Keep the original absolute /terrain_map publisher above unchanged.  This
+  // relative topic resolves inside each vehicle namespace, e.g.
+  // /vehicle0/terrain_map, and is used to provide terrain height to viewpoints.
+  bool publish_viewpoint_aligned_terrain_cloud = true;
+  std::string viewpoint_aligned_terrain_cloud_topic = "terrain_map_ext";
+  std::string viewpoint_aligned_height_layer = "elevation_BGK";
+  ros::Publisher viewpoint_aligned_terrain_cloud_publisher;
 
   /**
    * Geometry shared with tare_planner's ViewPointManager.
@@ -367,6 +376,110 @@ namespace
   };
 
   /**
+   * Publish the already-resampled output map as an XYZI cloud for viewpoint
+   * height assignment.  Each published point uses the output grid cell center
+   * as its real map-frame x/y and elevation_BGK as z.
+   */
+  void PublishViewpointAlignedTerrainCloud(
+      const grid_map::GridMap &output_map,
+      const ViewpointGridSnapshot &snapshot)
+  {
+    if (!publish_viewpoint_aligned_terrain_cloud)
+    {
+      return;
+    }
+
+    if (!output_map.exists(viewpoint_aligned_height_layer))
+    {
+      ROS_WARN_THROTTLE(
+          2.0,
+          "Cannot publish viewpoint-aligned terrain cloud: height layer missing (%s)",
+          viewpoint_aligned_height_layer.c_str());
+      return;
+    }
+
+    const bool has_traversability = output_map.exists(local_trav_layer);
+    if (!has_traversability)
+    {
+      ROS_WARN_THROTTLE(
+          2.0,
+          "Viewpoint-aligned terrain cloud has no %s layer; intensity defaults to 0.2",
+          local_trav_layer.c_str());
+    }
+
+    pcl::PointCloud<pcl::PointXYZI> terrain_cloud;
+    const grid_map::Size output_size = output_map.getSize();
+    terrain_cloud.points.reserve(
+        static_cast<std::size_t>(output_size(0)) *
+        static_cast<std::size_t>(output_size(1)));
+
+    std::size_t invalid_height_count = 0;
+    std::size_t traversable_count = 0;
+    std::size_t obstacle_count = 0;
+
+    for (grid_map::GridMapIterator it(output_map); !it.isPastEnd(); ++it)
+    {
+      const float height = output_map.at(viewpoint_aligned_height_layer, *it);
+      if (!std::isfinite(height))
+      {
+        ++invalid_height_count;
+        continue;
+      }
+
+      grid_map::Position position;
+      if (!output_map.getPosition(*it, position))
+      {
+        continue;
+      }
+
+      bool is_obstacle = false;
+      if (has_traversability)
+      {
+        const float traversability = output_map.at(local_trav_layer, *it);
+        is_obstacle = std::isfinite(traversability) &&
+                      traversability >
+                          static_cast<float>(terrain_map_cost_threshold);
+      }
+
+      pcl::PointXYZI point;
+      point.x = static_cast<float>(position.x());
+      point.y = static_cast<float>(position.y());
+      point.z = height;
+      point.intensity = is_obstacle ? 1.0f : 0.2f;
+      terrain_cloud.points.push_back(point);
+
+      if (is_obstacle)
+      {
+        ++obstacle_count;
+      }
+      else
+      {
+        ++traversable_count;
+      }
+    }
+
+    terrain_cloud.width =
+        static_cast<std::uint32_t>(terrain_cloud.points.size());
+    terrain_cloud.height = 1;
+    terrain_cloud.is_dense = true;
+
+    sensor_msgs::PointCloud2 terrain_message;
+    pcl::toROSMsg(terrain_cloud, terrain_message);
+    terrain_message.header.frame_id = output_map.getFrameId();
+    terrain_message.header.stamp = snapshot.stamp.isZero()
+                                       ? ros::Time::now()
+                                       : snapshot.stamp;
+    viewpoint_aligned_terrain_cloud_publisher.publish(terrain_message);
+
+    ROS_INFO_THROTTLE(
+        1.0,
+        "Published viewpoint-aligned terrain cloud %s: grid=%dx%d, valid_height=%zu, invalid_height=%zu, traversable=%zu, obstacle=%zu",
+        viewpoint_aligned_terrain_cloud_publisher.getTopic().c_str(),
+        output_size(0), output_size(1), terrain_cloud.points.size(),
+        invalid_height_count, traversable_count, obstacle_count);
+  }
+
+  /**
    * Downsample the persistent high-resolution map into a GridMap whose lower
    * corner, cell count and resolution are identical to ViewPointManager.
    * The caller owns the height_map read lock.
@@ -499,6 +612,7 @@ namespace
     }
 
     grid_map::GridMapRosConverter::toMessage(output_map, message);
+    PublishViewpointAlignedTerrainCloud(output_map, snapshot);
     ROS_INFO_STREAM_THROTTLE(1.0, "Published viewpoint-aligned trav_map: origin=["
                                       << snapshot.origin.x() << ", " << snapshot.origin.y()
                                       << "], size=" << config.number_x << "x" << config.number_y
@@ -1070,7 +1184,7 @@ Mapping::Mapping(ros::NodeHandle &nh, ros::NodeHandle &pnh)
   //                        local_trav_vehicle_type, "wheeled");
   pnh_.param<std::string>("traversability_cloud_topic",
                           local_trav_cloud_topic,
-                          "/terrain_map");
+                          "/local_traversability_cloud");
   pnh_.param<double>("terrain_map_cost_threshold",
                      terrain_map_cost_threshold, 0.98);
   terrain_map_cost_threshold = std::max(
@@ -1115,6 +1229,31 @@ Mapping::Mapping(ros::NodeHandle &nh, ros::NodeHandle &pnh)
   else
   {
     ROS_INFO("Local traversability cloud publication disabled");
+  }
+
+  // Publish the resampled elevation map on a relative topic so every robot
+  // gets an independent height cloud matching its own viewpoint rolling grid.
+  pnh_.param<bool>("publish_viewpoint_aligned_terrain_cloud",
+                   publish_viewpoint_aligned_terrain_cloud, true);
+  pnh_.param<std::string>("viewpoint_aligned_terrain_cloud_topic",
+                          viewpoint_aligned_terrain_cloud_topic,
+                          "terrain_map_ext");
+  pnh_.param<std::string>("viewpoint_aligned_height_layer",
+                          viewpoint_aligned_height_layer,
+                          "elevation_BGK");
+
+  if (publish_viewpoint_aligned_terrain_cloud)
+  {
+    viewpoint_aligned_terrain_cloud_publisher =
+        nh_.advertise<sensor_msgs::PointCloud2>(
+            viewpoint_aligned_terrain_cloud_topic, 1, false);
+    ROS_INFO("Publishing viewpoint-aligned terrain height cloud on %s using layer %s",
+             viewpoint_aligned_terrain_cloud_publisher.getTopic().c_str(),
+             viewpoint_aligned_height_layer.c_str());
+  }
+  else
+  {
+    ROS_INFO("Viewpoint-aligned terrain height cloud publication disabled");
   }
 
   ROS_INFO("Successfully subscribed to: %s (synchronized)", scan_topic_.c_str());
@@ -6259,7 +6398,6 @@ bool Mapping::buildGridMapMessage(grid_map_msgs::GridMap &message)
   // avoids a second getSubmap() and keeps the additional publication cheap.
   if (publish_local_trav_cloud)
   {
-    // local_trav_layer = "traversability_coarse_wheeled";
     if (!local_map.exists(local_trav_layer))
     {
       ROS_WARN_THROTTLE(

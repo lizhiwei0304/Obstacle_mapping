@@ -5,7 +5,6 @@ Panels:
     Property Tree Widget:
       Expanded:
         - /RegisteredScan1/Autocompute Value Bounds1
-        - /PointCloud21
       Splitter Ratio: 0.5543237328529358
     Tree Height: 305
   - Class: rviz/Selection
@@ -306,13 +305,13 @@ Visualization Manager:
       Queue Size: 100
       Value: false
     - Class: rviz/Marker
-      Enabled: false
+      Enabled: true
       Marker Topic: /vehicle0/topological_map_edge_marker
       Name: TopologicalEdgeMarker
       Namespaces:
-        {}
+        "": true
       Queue Size: 100
-      Value: false
+      Value: true
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
@@ -325,7 +324,7 @@ Visualization Manager:
       Color: 255; 255; 255
       Color Transformer: Intensity
       Decay Time: 0
-      Enabled: true
+      Enabled: false
       Invert Rainbow: false
       Max Color: 255; 255; 255
       Min Color: 0; 0; 0
@@ -340,7 +339,7 @@ Visualization Manager:
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: true
-      Value: true
+      Value: false
   Enabled: true
   Global Options:
     Background Color: 0; 0; 0
@@ -370,20 +369,26 @@ Visualization Manager:
   Value: true
   Views:
     Current:
-      Angle: 0.009999999776482582
-      Class: rviz/TopDownOrtho
+      Class: rviz/Orbit
+      Distance: 78.80244445800781
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
+      Field of View: 0.7853981852531433
+      Focal Point:
+        X: -13.658629417419434
+        Y: -2.0914595127105713
+        Z: -0.739316999912262
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Scale: 12.80871295928955
+      Pitch: 1.5297963619232178
       Target Frame: vehicle0/vehicle
-      X: -11.861288070678711
-      Y: -8.195747375488281
+      Yaw: 4.693185806274414
     Saved: ~
 Window Geometry:
   Displays:
