@@ -11,7 +11,7 @@
     <arg name="wait_for_start" default="false" />
     <arg name="start_topic" default="/start_exploration" />
 
-    <group ns="$(arg namespace_1)">
+    <group ns="$(arg namespace_3)">
         <node name="cloud_merger_and_accumulator" pkg="obstacle_mapping" type="cloud_merger_and_accumulator.py" output="screen">
             <param name="wait_for_start" value="$(arg wait_for_start)" />
             <param name="start_topic" value="$(arg start_topic)" />
@@ -34,7 +34,7 @@
         </node>
 
         <include file="$(find obstacle_mapping)/launch/robot_mapping.launch">
-            <arg name="ns" value="$(arg namespace_1)" />
+            <arg name="ns" value="$(arg namespace_3)" />
         </include>
     </group>
 </launch>
