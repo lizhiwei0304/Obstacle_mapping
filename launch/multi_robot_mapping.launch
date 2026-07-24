@@ -7,84 +7,90 @@
     <arg name="namespace_1" default="vehicle$(arg id0)" />
     <arg name="namespace_2" default="vehicle$(arg id1)" />
     <arg name="namespace_3" default="vehicle$(arg id2)" />
+    
+    <arg name="wait_for_start" default="false" />
+    <arg name="start_topic" default="/start_exploration" />
+
+    <group ns="$(arg namespace_1)">
+        <node name="cloud_merger_and_accumulator" pkg="obstacle_mapping" type="cloud_merger_and_accumulator.py" output="screen">
+            <param name="wait_for_start" value="$(arg wait_for_start)" />
+            <param name="start_topic" value="$(arg start_topic)" />
+
+            <!-- Smaller rolling window reduces stale points and merge cost. -->
+            <param name="window_size" value="5" />
+            <!-- Publish every second synchronized input instead of every fifth. -->
+            <param name="publish_every_n" value="2" />
+            <!-- A 0.2 m voxel is sufficient for the downstream 0.5 m grid. -->
+            <param name="voxel_leaf" value="0.2" />
+
+            <param name="prefer_intensity" value="true" />
+            <param name="terrain_map" value="terrain_map" />
+            <param name="terrain_map_ext" value="terrain_map_ext" />
+            <param name="registered_scan" value="registered_scan_filted" />
+            <param name="terrain_merged_out" value="terrain_map_merged" />
+            <param name="registered_scan_accum_out" value="registered_scan_accum_5" />
+            <param name="sync_slop" value="0.10" />
+            <param name="sync_queue" value="10" />
+        </node>
+
+        <include file="$(find obstacle_mapping)/launch/robot_mapping.launch">
+            <arg name="ns" value="$(arg namespace_1)" />
+        </include>
+    </group>
 
 
-    <node name="multi_robot_mapping_node" pkg="obstacle_mapping" type="multi_robot_mapping_node"
-        output="screen">
-        <!-- Topic and frame settings -->
-        <param name="scan_topic" value="/vehicle0/registered_scan_accum_10" />
-        <param name="frame_id" value="map" />
-        <param name="queue_size" value="10" />
+    <group ns="$(arg namespace_2)">
+        <node name="cloud_merger_and_accumulator" pkg="obstacle_mapping" type="cloud_merger_and_accumulator.py" output="screen">
+            <param name="wait_for_start" value="$(arg wait_for_start)" />
+            <param name="start_topic" value="$(arg start_topic)" />
 
-        <!-- Vehicle and debug settings -->
-        <param name="debug_mode" value="false" />
+            <!-- Smaller rolling window reduces stale points and merge cost. -->
+            <param name="window_size" value="5" />
+            <!-- Publish every second synchronized input instead of every fifth. -->
+            <param name="publish_every_n" value="2" />
+            <!-- A 0.2 m voxel is sufficient for the downstream 0.5 m grid. -->
+            <param name="voxel_leaf" value="0.2" />
 
-        <!-- Sensor range parameters (also used as observation range for point cloud filtering) -->
-        <param name="max_range" value="25.0" />
-        <param name="min_range" value="0.1" />
+            <param name="prefer_intensity" value="true" />
+            <param name="terrain_map" value="terrain_map" />
+            <param name="terrain_map_ext" value="terrain_map_ext" />
+            <param name="registered_scan" value="registered_scan_filted" />
+            <param name="terrain_merged_out" value="terrain_map_merged" />
+            <param name="registered_scan_accum_out" value="registered_scan_accum_5" />
+            <param name="sync_slop" value="0.10" />
+            <param name="sync_queue" value="10" />
+        </node>
 
-        <!-- Point cloud Z range parameters -->
-        <param name="min_z" value="-3.0" />
-        <param name="max_z" value="1.3" />
+        <include file="$(find obstacle_mapping)/launch/robot_mapping.launch">
+            <arg name="ns" value="$(arg namespace_2)" />
+        </include>
+    </group>
 
-        <!-- Map parameters -->
-        <param name="map_resolution" value="0.5" />
-        <param name="map_length_x" value="1000.0" />
-        <param name="map_length_y" value="1000.0" />
+    <group ns="$(arg namespace_3)">
+        <node name="cloud_merger_and_accumulator" pkg="obstacle_mapping" type="cloud_merger_and_accumulator.py" output="screen">
+            <param name="wait_for_start" value="$(arg wait_for_start)" />
+            <param name="start_topic" value="$(arg start_topic)" />
 
-        <!-- Local map visualization size -->
-        <param name="local_map_size_x" value="20.0" />
-        <param name="local_map_size_y" value="20.0" />
+            <!-- Smaller rolling window reduces stale points and merge cost. -->
+            <param name="window_size" value="5" />
+            <!-- Publish every second synchronized input instead of every fifth. -->
+            <param name="publish_every_n" value="2" />
+            <!-- A 0.2 m voxel is sufficient for the downstream 0.5 m grid. -->
+            <param name="voxel_leaf" value="0.2" />
 
-        <!-- BGK inference kernel size -->
-        <param name="bgk_kernel_size" value="0.6" />
+            <param name="prefer_intensity" value="true" />
+            <param name="terrain_map" value="terrain_map" />
+            <param name="terrain_map_ext" value="terrain_map_ext" />
+            <param name="registered_scan" value="registered_scan_filted" />
+            <param name="terrain_merged_out" value="terrain_map_merged" />
+            <param name="registered_scan_accum_out" value="registered_scan_accum_5" />
+            <param name="sync_slop" value="0.10" />
+            <param name="sync_queue" value="10" />
+        </node>
 
-        <!-- Traversability thresholds -->
-        <param name="slope_threshold" value="0.3" />
-        <param name="roughness_threshold" value="0.04" />
-        <param name="step_threshold" value="0.4" />
-        <param name="init_trav_threshold" value="0.5" />
+        <include file="$(find obstacle_mapping)/launch/robot_mapping.launch">
+            <arg name="ns" value="$(arg namespace_3)" />
+        </include>
+    </group>
 
-        <!-- Feature mapping parameters -->
-        <param name="normal_estimation_radius" value="0.8" />
-        <param name="step_radius" value="0.6" />
-        <param name="min_normal_points" value="6" />
-        <param name="thread_count" value="4" />
-
-        <!-- Vehicle model parameters for fine-grained traversability -->
-        <param name="wheeled_model_path"
-            value="$(find obstacle_mapping)/test_map/vehicles/wheeled_car.csv" />
-        <param name="tracked_model_path"
-            value="$(find obstacle_mapping)/test_map/vehicles/tracked_car.csv" />
-        <param name="robot_rows" value="9" />
-        <param name="robot_cols" value="11" />
-        <param name="robot_model_resolution" value="0.2" />
-        <param name="touch_gap_threshold" value="0.05" />
-        <param name="collision_gap_threshold" value="0.1" />
-        <param name="max_iterations" value="50" />
-
-        <!-- Fine-grained traversability computation control -->
-        <!-- 姿态模型开关 -->
-        <param name="enable_fine_traversability" value="true" />
-        <param name="enable_incremental_geom" value="true" />
-        <param name="enable_incremental_step" value="true" />
-        <param name="enable_incremental_trav" value="true" />
-
-        <!-- Fine-grained traversability range parameters -->
-        <param name="fine_trav_min" value="0.4" />
-        <param name="fine_trav_max" value="0.9" />
-        <param name="fine_slope_min" value="0.3" />
-        <param name="fine_slope_max" value="0.95" />
-        <param name="fine_roughness_min" value="0.2" />
-        <param name="fine_roughness_max" value="1.0" />
-        <param name="fine_roll_threshold_deg" value="30.0" />
-        <param name="fine_pitch_threshold_deg" value="30.0" />
-
-        <!-- Asynchronous processing parameters -->
-        <param name="skip_old_messages" value="false" />
-    </node>
-
-    <!-- RViz visualization -->
-    <node name="rviz" pkg="rviz" type="rviz"
-        args="-d $(find obstacle_mapping)/rviz/show_multi_robot.rviz" output="screen" />
 </launch>
