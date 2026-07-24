@@ -5,6 +5,7 @@ Panels:
     Property Tree Widget:
       Expanded:
         - /RegisteredScan1/Autocompute Value Bounds1
+        - /vehicle_frame1
       Splitter Ratio: 0.5543237328529358
     Tree Height: 305
   - Class: rviz/Selection
@@ -175,9 +176,9 @@ Visualization Manager:
     - Alpha: 1
       Class: rviz/Axes
       Enabled: true
-      Length: 0.5
+      Length: 3
       Name: vehicle_frame
-      Radius: 0.10000000149011612
+      Radius: 0.5
       Reference Frame: vehicle1/vehicle
       Show Trail: false
       Value: true
@@ -256,7 +257,7 @@ Visualization Manager:
       History Length: 1
       Name: Waypoint
       Queue Size: 10
-      Radius: 0.30000001192092896
+      Radius: 1
       Topic: /vehicle1/way_point
       Unreliable: false
       Value: true
@@ -394,7 +395,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 47.81820297241211
+      Distance: 132.6036376953125
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1

@@ -56,9 +56,9 @@
     <arg name="fine_heading_samples" default="4" />
 
     <!-- Wheeled-platform capability and geometry-cost parameters. -->
-    <arg name="wheeled_slope_limit_deg" default="25.0" />
-    <arg name="wheeled_roughness_limit" default="0.10" />
-    <arg name="wheeled_step_limit_m" default="0.10" />
+    <arg name="wheeled_slope_limit_deg" default="20.0" />
+    <arg name="wheeled_roughness_limit" default="0.08" />
+    <arg name="wheeled_step_limit_m" default="0.08" />
     <arg name="wheeled_geo_slope_weight" default="0.33" />
     <arg name="wheeled_geo_roughness_weight" default="0.33" />
     <arg name="wheeled_geo_step_weight" default="0.33" />
