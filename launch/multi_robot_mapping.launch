@@ -7,7 +7,7 @@
     <arg name="namespace_1" default="vehicle$(arg id0)" />
     <arg name="namespace_2" default="vehicle$(arg id1)" />
     <arg name="namespace_3" default="vehicle$(arg id2)" />
-    
+
     <arg name="wait_for_start" default="false" />
     <arg name="start_topic" default="/start_exploration" />
 
