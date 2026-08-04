@@ -2,7 +2,7 @@
  * @Author: lee lizw_0304@163.com
  * @Date: 2026-07-15 21:21:31
  * @LastEditors: lee lizw_0304@163.com
- * @LastEditTime: 2026-08-04 12:51:15
+ * @LastEditTime: 2026-08-04 15:59:09
  * @FilePath: /src/obstacle_mapping/src/multi_robot_mapping.cpp
  * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
  */
@@ -525,14 +525,14 @@ namespace
         {"slope", ViewpointPoolType::kMean},
         {"roughness", ViewpointPoolType::kMean},
         {"step", ViewpointPoolType::kMax},
-        {"slope_deg", ViewpointPoolType::kMean},
-        {"roughness_raw", ViewpointPoolType::kMean},
-        {"step_height", ViewpointPoolType::kMean},
-        {"traversability", ViewpointPoolType::kMean},
-        {"traversability_coarse_wheeled", ViewpointPoolType::kMean},
-        {"traversability_coarse_tracked", ViewpointPoolType::kMean},
-        {"traversability_fine_wheeled", ViewpointPoolType::kMean},
-        {"traversability_fine_tracked", ViewpointPoolType::kMean},
+        {"slope_deg", ViewpointPoolType::kMax},
+        {"roughness_raw", ViewpointPoolType::kMax},
+        {"step_height", ViewpointPoolType::kMax},
+        {"traversability", ViewpointPoolType::kMax},
+        {"traversability_coarse_wheeled", ViewpointPoolType::kMax},
+        {"traversability_coarse_tracked", ViewpointPoolType::kMax},
+        {"traversability_fine_wheeled", ViewpointPoolType::kMax},
+        {"traversability_fine_tracked", ViewpointPoolType::kMax},
         {"critical", ViewpointPoolType::kMax},
     }};
 
