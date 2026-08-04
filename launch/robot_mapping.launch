@@ -34,7 +34,7 @@
     <arg name="startup_hole_min_boundary_cells" default="12"/>
     <arg name="startup_hole_max_attempts" default="100"/>
 
-    <arg name="slope_threshold" default="0.3" />
+    <arg name="slope_threshold" default="0.25" />
     <arg name="roughness_threshold" default="0.04" />
     <arg name="step_threshold" default="0.4" />
     <arg name="init_trav_threshold" default="0.5" />
