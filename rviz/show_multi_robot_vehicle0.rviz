@@ -7,7 +7,7 @@ Panels:
         - /RegisteredScan1/Autocompute Value Bounds1
         - /PointCloud24
       Splitter Ratio: 0.5543237328529358
-    Tree Height: 558
+    Tree Height: 305
   - Class: rviz/Selection
     Name: Selection
   - Class: rviz/Tool Properties
@@ -519,7 +519,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 71.7186279296875
+      Distance: 116.91566467285156
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -527,9 +527,9 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: -0.49136728048324585
-        Y: -0.0501527264714241
-        Z: 7.626190185546875
+        X: 3.0030789375305176
+        Y: -5.239596843719482
+        Z: 5.815077781677246
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
@@ -537,7 +537,7 @@ Visualization Manager:
       Near Clip Distance: 0.009999999776482582
       Pitch: 1.5697963237762451
       Target Frame: vehicle0/vehicle
-      Yaw: 4.713189601898193
+      Yaw: 3.814697265625e-06
     Saved: ~
 Window Geometry:
   Displays:
