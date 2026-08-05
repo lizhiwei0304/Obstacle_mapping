@@ -2,7 +2,7 @@
  * @Author: lee lizw_0304@163.com
  * @Date: 2026-07-15 21:21:31
  * @LastEditors: lee lizw_0304@163.com
- * @LastEditTime: 2026-08-04 15:59:09
+ * @LastEditTime: 2026-08-05 11:21:13
  * @FilePath: /src/obstacle_mapping/src/multi_robot_mapping.cpp
  * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
  */
@@ -79,6 +79,16 @@ namespace
   // terrain as free is less conservative than omitting it.
   bool terrain_map_unknown_as_traversable = true;
   ros::Publisher local_trav_cloud_publisher;
+
+  // Robust resampling parameters for the viewpoint-aligned traversability
+  // layers.  A fine traversability cell has already evaluated the complete
+  // vehicle footprint.  Therefore, max-pooling every possible vehicle centre
+  // inside a coarse viewpoint cell is unnecessarily conservative.  The
+  // robust policy keeps the centre cost, rejects a sufficiently large hard-
+  // obstacle region, and otherwise uses a configurable upper quantile.
+  double viewpoint_pool_min_valid_ratio = 0.50;
+  double viewpoint_pool_max_obstacle_ratio = 0.30;
+  double viewpoint_pool_quantile = 0.75;
 
   // Height cloud aligned one-to-one with ViewPointManager's rolling XY grid.
   // Keep the original absolute /terrain_map publisher above unchanged.  This
@@ -366,7 +376,8 @@ namespace
   enum class ViewpointPoolType
   {
     kMax,
-    kMean
+    kMean,
+    kRobustCenter
   };
 
   struct ViewpointLayerPolicy
@@ -528,11 +539,11 @@ namespace
         {"slope_deg", ViewpointPoolType::kMax},
         {"roughness_raw", ViewpointPoolType::kMax},
         {"step_height", ViewpointPoolType::kMax},
-        {"traversability", ViewpointPoolType::kMax},
-        {"traversability_coarse_wheeled", ViewpointPoolType::kMax},
-        {"traversability_coarse_tracked", ViewpointPoolType::kMax},
-        {"traversability_fine_wheeled", ViewpointPoolType::kMax},
-        {"traversability_fine_tracked", ViewpointPoolType::kMax},
+        {"traversability", ViewpointPoolType::kRobustCenter},
+        {"traversability_coarse_wheeled", ViewpointPoolType::kRobustCenter},
+        {"traversability_coarse_tracked", ViewpointPoolType::kRobustCenter},
+        {"traversability_fine_wheeled", ViewpointPoolType::kRobustCenter},
+        {"traversability_fine_tracked", ViewpointPoolType::kRobustCenter},
         {"critical", ViewpointPoolType::kMax},
     }};
 
@@ -558,6 +569,52 @@ namespace
                                          output_resolution);
     std::size_t sampled_cells = 0;
 
+    // Statistics below refer only to the current vehicle's fine
+    // traversability layer.  They make it possible to distinguish a real
+    // centre obstacle, a region with too many obstacles, missing source data,
+    // and successful robust downsampling directly from the ROS log.
+    std::size_t robust_output_count = 0;
+    std::size_t robust_center_obstacle_count = 0;
+    std::size_t robust_ratio_obstacle_count = 0;
+    std::size_t robust_insufficient_data_count = 0;
+    std::size_t robust_center_fallback_count = 0;
+
+    const auto isHardObstacleCost = [](float value) -> bool
+    {
+      constexpr float kCostEpsilon = 1e-6f;
+      return value >= 1.0f - kCostEpsilon ||
+             value > static_cast<float>(terrain_map_cost_threshold);
+    };
+
+    // Linear quantile interpolation avoids a large discrete jump when a
+    // viewpoint cell contains only a few source cells.
+    const auto computeQuantile = [](std::vector<float> &values,
+                                    double quantile) -> float
+    {
+      if (values.empty())
+      {
+        return std::numeric_limits<float>::quiet_NaN();
+      }
+
+      std::sort(values.begin(), values.end());
+      if (values.size() == 1)
+      {
+        return values.front();
+      }
+
+      const double position =
+          quantile * static_cast<double>(values.size() - 1);
+      const std::size_t lower_index =
+          static_cast<std::size_t>(std::floor(position));
+      const std::size_t upper_index =
+          static_cast<std::size_t>(std::ceil(position));
+      const double fraction = position - static_cast<double>(lower_index);
+
+      return static_cast<float>(
+          static_cast<double>(values[lower_index]) * (1.0 - fraction) +
+          static_cast<double>(values[upper_index]) * fraction);
+    };
+
     for (grid_map::GridMapIterator output_it(output_map);
          !output_it.isPastEnd(); ++output_it)
     {
@@ -580,14 +637,28 @@ namespace
       for (const auto &policy : used_policies)
       {
         double sum = 0.0;
+        std::size_t source_cell_count = 0;
         std::size_t valid_count = 0;
+        std::size_t obstacle_count = 0;
         float maximum = -std::numeric_limits<float>::infinity();
+        std::vector<float> traversable_values;
 
         for (grid_map::SubmapIterator source_it(source_geometry);
              !source_it.isPastEnd(); ++source_it)
         {
+          ++source_cell_count;
           const float value = height_map.at(policy.name, *source_it);
           if (!std::isfinite(value))
+          {
+            continue;
+          }
+
+          // Traversability is a normalized cost.  Out-of-range values must
+          // not participate in valid-ratio, obstacle-ratio or quantile
+          // calculations.  Other diagnostic layers keep their original
+          // finite-value behaviour.
+          if (policy.pool_type == ViewpointPoolType::kRobustCenter &&
+              (value < 0.0f || value > 1.0f))
           {
             continue;
           }
@@ -595,17 +666,145 @@ namespace
           sum += static_cast<double>(value);
           maximum = std::max(maximum, value);
           ++valid_count;
+
+          if (policy.pool_type == ViewpointPoolType::kRobustCenter)
+          {
+            if (isHardObstacleCost(value))
+            {
+              ++obstacle_count;
+            }
+            else
+            {
+              traversable_values.push_back(value);
+            }
+          }
         }
 
         if (valid_count == 0)
         {
+          if (policy.pool_type == ViewpointPoolType::kRobustCenter &&
+              local_trav_layer == policy.name)
+          {
+            ++robust_insufficient_data_count;
+          }
           continue;
         }
 
-        output_map.at(policy.name, output_index) =
-            policy.pool_type == ViewpointPoolType::kMax
-                ? maximum
-                : static_cast<float>(sum / static_cast<double>(valid_count));
+        if (policy.pool_type == ViewpointPoolType::kMax)
+        {
+          output_map.at(policy.name, output_index) = maximum;
+          continue;
+        }
+
+        if (policy.pool_type == ViewpointPoolType::kMean)
+        {
+          output_map.at(policy.name, output_index) =
+              static_cast<float>(sum / static_cast<double>(valid_count));
+          continue;
+        }
+
+        // --------------------------------------------------------------
+        // Robust-centre pooling for normalized traversability costs.
+        // --------------------------------------------------------------
+        const bool is_selected_platform_layer =
+            local_trav_layer == policy.name;
+
+        grid_map::Index source_center_index;
+        const bool center_index_valid =
+            height_map.getIndex(cell_center, source_center_index);
+
+        float center_cost = std::numeric_limits<float>::quiet_NaN();
+        if (center_index_valid)
+        {
+          center_cost = height_map.at(policy.name, source_center_index);
+        }
+
+        const bool center_cost_valid =
+            std::isfinite(center_cost) &&
+            center_cost >= 0.0f && center_cost <= 1.0f;
+
+        // The centre represents the actual viewpoint location.  A confirmed
+        // centre obstacle can never be removed by surrounding free cells.
+        if (center_cost_valid && isHardObstacleCost(center_cost))
+        {
+          output_map.at(policy.name, output_index) = 1.0f;
+          if (is_selected_platform_layer)
+          {
+            ++robust_center_obstacle_count;
+          }
+          continue;
+        }
+
+        const double valid_ratio =
+            source_cell_count > 0
+                ? static_cast<double>(valid_count) /
+                      static_cast<double>(source_cell_count)
+                : 0.0;
+
+        // Too little evidence remains unknown.  SensorCoveragePlanner will
+        // convert NaN into its missing-cost value instead of reusing stale
+        // traversability from an older rolling-map position.
+        if (valid_ratio < viewpoint_pool_min_valid_ratio)
+        {
+          if (is_selected_platform_layer)
+          {
+            ++robust_insufficient_data_count;
+          }
+          continue;
+        }
+
+        const double obstacle_ratio =
+            static_cast<double>(obstacle_count) /
+            static_cast<double>(valid_count);
+
+        // A spatially meaningful obstacle region is still rejected.  Unlike
+        // max-pooling, one isolated high-cost source cell does not invalidate
+        // the complete coarse viewpoint cell.
+        if (obstacle_ratio >= viewpoint_pool_max_obstacle_ratio)
+        {
+          output_map.at(policy.name, output_index) = 1.0f;
+          if (is_selected_platform_layer)
+          {
+            ++robust_ratio_obstacle_count;
+          }
+          continue;
+        }
+
+        // If the obstacle ratio is below the rejection threshold, calculate
+        // the upper quantile only from non-obstacle values.  Including hard
+        // obstacles here would recreate the original max-pooling expansion
+        // when the source window contains only a few cells.
+        float robust_cost =
+            computeQuantile(traversable_values, viewpoint_pool_quantile);
+        if (!std::isfinite(robust_cost))
+        {
+          if (is_selected_platform_layer)
+          {
+            ++robust_insufficient_data_count;
+          }
+          continue;
+        }
+
+        // Never make the exact viewpoint centre cheaper than its source-map
+        // value.  If the centre itself is temporarily unknown but the window
+        // has sufficient valid coverage, the quantile provides a controlled
+        // fallback and prevents a one-cell data hole from breaking the graph.
+        if (center_cost_valid)
+        {
+          robust_cost = std::max(robust_cost, center_cost);
+        }
+        else if (is_selected_platform_layer)
+        {
+          ++robust_center_fallback_count;
+        }
+
+        robust_cost = std::max(0.0f, std::min(1.0f, robust_cost));
+        output_map.at(policy.name, output_index) = robust_cost;
+
+        if (is_selected_platform_layer)
+        {
+          ++robust_output_count;
+        }
       }
 
       ++sampled_cells;
@@ -618,7 +817,13 @@ namespace
                                       << "], size=" << config.number_x << "x" << config.number_y
                                       << ", resolution=" << output_resolution
                                       << ", generation=" << snapshot.generation
-                                      << ", sampled_cells=" << sampled_cells);
+                                      << ", sampled_cells=" << sampled_cells
+                                      << ", robust_layer=" << local_trav_layer
+                                      << ", robust_output=" << robust_output_count
+                                      << ", center_obstacle=" << robust_center_obstacle_count
+                                      << ", ratio_obstacle=" << robust_ratio_obstacle_count
+                                      << ", insufficient=" << robust_insufficient_data_count
+                                      << ", center_fallback=" << robust_center_fallback_count);
     return true;
   }
 
@@ -1189,6 +1394,26 @@ Mapping::Mapping(ros::NodeHandle &nh, ros::NodeHandle &pnh)
                      terrain_map_cost_threshold, 0.98);
   terrain_map_cost_threshold = std::max(
       0.0, std::min(1.0, terrain_map_cost_threshold));
+
+  pnh_.param<double>("viewpoint_pool_min_valid_ratio",
+                     viewpoint_pool_min_valid_ratio, 0.50);
+  pnh_.param<double>("viewpoint_pool_max_obstacle_ratio",
+                     viewpoint_pool_max_obstacle_ratio, 0.30);
+  pnh_.param<double>("viewpoint_pool_quantile",
+                     viewpoint_pool_quantile, 0.75);
+
+  viewpoint_pool_min_valid_ratio = std::max(
+      0.0, std::min(1.0, viewpoint_pool_min_valid_ratio));
+  viewpoint_pool_max_obstacle_ratio = std::max(
+      1e-6, std::min(1.0, viewpoint_pool_max_obstacle_ratio));
+  viewpoint_pool_quantile = std::max(
+      0.0, std::min(1.0, viewpoint_pool_quantile));
+
+  ROS_INFO("Viewpoint robust pooling: min_valid_ratio=%.2f, max_obstacle_ratio=%.2f, quantile=%.2f, hard_cost_threshold=%.3f",
+           viewpoint_pool_min_valid_ratio,
+           viewpoint_pool_max_obstacle_ratio,
+           viewpoint_pool_quantile,
+           terrain_map_cost_threshold);
   pnh_.param<double>("terrain_map_traversable_z_offset",
                      terrain_map_traversable_z_offset, -0.1);
   pnh_.param<double>("terrain_map_obstacle_z_offset",
