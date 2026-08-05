@@ -19,7 +19,7 @@
     <arg name="min_range" default="0.1" />
     <arg name="min_z" default="-3.0" />
     <arg name="max_z" default="2.0" />
-    <arg name="map_resolution" default="0.25" />
+    <arg name="map_resolution" default="0.3" />
     <arg name="map_length_x" default="1000.0" />
     <arg name="map_length_y" default="1000.0" />
     <arg name="local_map_size_x" default="10.0" />
@@ -67,9 +67,12 @@
     <arg name="wheeled_efficiency_rough_bonus" default="0.00" />
 
     <!-- Tracked-platform capability and geometry-cost parameters. -->
-    <arg name="tracked_slope_limit_deg" default="35.0" />
+    <!-- <arg name="tracked_slope_limit_deg" default="35.0" />
     <arg name="tracked_roughness_limit" default="0.20" />
-    <arg name="tracked_step_limit_m" default="0.25" />
+    <arg name="tracked_step_limit_m" default="0.25" /> -->
+    <arg name="tracked_slope_limit_deg" default="30.0" />
+    <arg name="tracked_roughness_limit" default="0.14" />
+    <arg name="tracked_step_limit_m" default="0.16" />
     <arg name="tracked_geo_slope_weight" default="0.34" />
     <arg name="tracked_geo_roughness_weight" default="0.33" />
     <arg name="tracked_geo_step_weight" default="0.33" />
