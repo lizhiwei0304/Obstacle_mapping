@@ -472,11 +472,11 @@ Visualization Manager:
       Color: 255; 255; 255
       Color Transformer: Intensity
       Decay Time: 0
-      Enabled: false
+      Enabled: true
       Invert Rainbow: false
       Max Color: 255; 255; 255
       Min Color: 0; 0; 0
-      Name: PointCloud2
+      Name: ExporationArea
       Position Transformer: XYZ
       Queue Size: 10
       Selectable: true
@@ -487,7 +487,7 @@ Visualization Manager:
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: true
-      Value: false
+      Value: true
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
@@ -563,10 +563,10 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Scale: 16.571985244750977
+      Scale: 5.2446746826171875
       Target Frame: vehicle1/vehicle
-      X: -1.9771326780319214
-      Y: -0.23803061246871948
+      X: -17.22808265686035
+      Y: -5.565451622009277
     Saved: ~
 Window Geometry:
   Displays:
