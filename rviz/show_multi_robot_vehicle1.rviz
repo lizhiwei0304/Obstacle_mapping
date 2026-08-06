@@ -5,7 +5,7 @@ Panels:
     Property Tree Widget:
       Expanded:
         - /RegisteredScan1/Autocompute Value Bounds1
-        - /Waypoint1
+        - /vehicle_frame1
       Splitter Ratio: 0.5543237328529358
     Tree Height: 558
   - Class: rviz/Selection
@@ -176,9 +176,9 @@ Visualization Manager:
     - Alpha: 1
       Class: rviz/Axes
       Enabled: true
-      Length: 0.5
+      Length: 3
       Name: vehicle_frame
-      Radius: 0.10000000149011612
+      Radius: 1
       Reference Frame: vehicle1/vehicle
       Show Trail: false
       Value: true
@@ -564,10 +564,10 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Scale: 8.305402755737305
+      Scale: 8.50367259979248
       Target Frame: vehicle1/vehicle
-      X: 29.694503784179688
-      Y: 1.1162855625152588
+      X: -0.8375986218452454
+      Y: -17.60118293762207
     Saved: ~
 Window Geometry:
   Displays:
