@@ -7,7 +7,7 @@ Panels:
         - /RegisteredScan1/Autocompute Value Bounds1
         - /vehicle_frame1
       Splitter Ratio: 0.5543237328529358
-    Tree Height: 558
+    Tree Height: 305
   - Class: rviz/Selection
     Name: Selection
   - Class: rviz/Tool Properties
@@ -564,10 +564,10 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Scale: 8.50367259979248
+      Scale: 18.278955459594727
       Target Frame: vehicle1/vehicle
-      X: -0.8375986218452454
-      Y: -17.60118293762207
+      X: 0.2142312377691269
+      Y: 3.358668804168701
     Saved: ~
 Window Geometry:
   Displays:
