@@ -7,7 +7,7 @@ Panels:
         - /RegisteredScan1/Autocompute Value Bounds1
         - /LocalPath1
       Splitter Ratio: 0.5543237328529358
-    Tree Height: 558
+    Tree Height: 305
   - Class: rviz/Selection
     Name: Selection
   - Class: rviz/Tool Properties
@@ -543,7 +543,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 10.589681625366211
+      Distance: 36.83673858642578
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1

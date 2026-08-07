@@ -2,7 +2,7 @@
  * @Author: lee lizw_0304@163.com
  * @Date: 2026-07-15 21:21:31
  * @LastEditors: lee lizw_0304@163.com
- * @LastEditTime: 2026-08-05 11:21:13
+ * @LastEditTime: 2026-08-07 16:47:07
  * @FilePath: /src/obstacle_mapping/src/multi_robot_mapping.cpp
  * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
  */
@@ -530,20 +530,45 @@ namespace
       return false;
     }
 
+    // static const std::array<ViewpointLayerPolicy, 14> policies = {{
+    //     {"elevation", ViewpointPoolType::kMean},
+    //     {"elevation_BGK", ViewpointPoolType::kMean},
+    //     {"slope", ViewpointPoolType::kMean},
+    //     {"roughness", ViewpointPoolType::kMean},
+    //     {"step", ViewpointPoolType::kMax},
+    //     {"slope_deg", ViewpointPoolType::kMax},
+    //     {"roughness_raw", ViewpointPoolType::kMax},
+    //     {"step_height", ViewpointPoolType::kMax},
+    //     {"traversability", ViewpointPoolType::kRobustCenter},
+    //     {"traversability_coarse_wheeled", ViewpointPoolType::kRobustCenter},
+    //     {"traversability_coarse_tracked", ViewpointPoolType::kRobustCenter},
+    //     {"traversability_fine_wheeled", ViewpointPoolType::kRobustCenter},
+    //     {"traversability_fine_tracked", ViewpointPoolType::kRobustCenter},
+    //     {"critical", ViewpointPoolType::kMax},
+    // }};
+
     static const std::array<ViewpointLayerPolicy, 14> policies = {{
+        // 高程层保持平均池化
         {"elevation", ViewpointPoolType::kMean},
         {"elevation_BGK", ViewpointPoolType::kMean},
+
+        // 用于显示或辅助计算的坡度、粗糙度层保持原来的策略
         {"slope", ViewpointPoolType::kMean},
         {"roughness", ViewpointPoolType::kMean},
+
+        // 几何风险指标使用最大池化
         {"step", ViewpointPoolType::kMax},
         {"slope_deg", ViewpointPoolType::kMax},
         {"roughness_raw", ViewpointPoolType::kMax},
         {"step_height", ViewpointPoolType::kMax},
-        {"traversability", ViewpointPoolType::kRobustCenter},
-        {"traversability_coarse_wheeled", ViewpointPoolType::kRobustCenter},
-        {"traversability_coarse_tracked", ViewpointPoolType::kRobustCenter},
-        {"traversability_fine_wheeled", ViewpointPoolType::kRobustCenter},
-        {"traversability_fine_tracked", ViewpointPoolType::kRobustCenter},
+
+        // 所有通行度层改成最大池化
+        {"traversability", ViewpointPoolType::kMax},
+        {"traversability_coarse_wheeled", ViewpointPoolType::kMax},
+        {"traversability_coarse_tracked", ViewpointPoolType::kMax},
+        {"traversability_fine_wheeled", ViewpointPoolType::kMax},
+        {"traversability_fine_tracked", ViewpointPoolType::kMax},
+
         {"critical", ViewpointPoolType::kMax},
     }};
 
