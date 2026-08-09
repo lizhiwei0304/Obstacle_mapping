@@ -2,7 +2,7 @@
  * @Author: lee lizw_0304@163.com
  * @Date: 2026-07-15 21:21:31
  * @LastEditors: lee lizw_0304@163.com
- * @LastEditTime: 2026-08-07 16:47:07
+ * @LastEditTime: 2026-08-09 19:33:18
  * @FilePath: /src/obstacle_mapping/src/multi_robot_mapping.cpp
  * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
  */
@@ -2513,6 +2513,8 @@ void Mapping::initGridMap()
   height_map_.add("variance");                      // Height variance
   height_map_.add("min_elevation");                 // Minimum elevation in cell
   height_map_.add("max_elevation");                 // Maximum elevation in cell
+  height_map_.add("max_elevation_x");               // X coordinate of the maximum-height return
+  height_map_.add("max_elevation_y");               // Y coordinate of the maximum-height return
   height_map_.add("n_points");                      // Number of points in cell
   height_map_.add("normal_x");                      // Surface normal X component
   height_map_.add("normal_y");                      // Surface normal Y component
@@ -2568,6 +2570,8 @@ void Mapping::height_mapping(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud)
   auto &variance = height_map_["variance"];           // 高度方差（用于不确定性）
   auto &min_elevation = height_map_["min_elevation"]; // cell 内最小高度
   auto &max_elevation = height_map_["max_elevation"]; // cell 内最大高度
+  auto &max_elevation_x = height_map_["max_elevation_x"]; // cell 内最高点的 x
+  auto &max_elevation_y = height_map_["max_elevation_y"]; // cell 内最高点的 y
   auto &n_points = height_map_["n_points"];           // cell 内累计观测点数（用于统计更新）
   auto &incremental_geom = height_map_["incremental_geom_computed"];
   auto &incremental_step = height_map_["incremental_step_computed"];
@@ -2645,11 +2649,14 @@ void Mapping::height_mapping(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud)
     auto &npts = n_points(index(0), index(1));       // 当前累计点数
     auto &min_h = min_elevation(index(0), index(1)); // 当前最小高度
     auto &max_h = max_elevation(index(0), index(1)); // 当前最大高度
+    auto &max_h_x = max_elevation_x(index(0), index(1));
+    auto &max_h_y = max_elevation_y(index(0), index(1));
 
     // 判断这个 cell 在本次更新之前是否未被观测过
     // npts==0 => 未观测（高度可能来自 BGK 或默认值）
     bool was_unobserved = (npts == 0);
     const float old_height = height;
+    const float old_max_height = max_h;
 
     if (npts == 0)
     {
@@ -2665,6 +2672,8 @@ void Mapping::height_mapping(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud)
       // min/max 都初始化为该点高度
       min_h = point.z;
       max_h = point.z;
+      max_h_x = point.x;
+      max_h_y = point.y;
 
       // 点数置为 1
       npts = 1;
@@ -2684,7 +2693,12 @@ void Mapping::height_mapping(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud)
 
       // 更新 min/max
       min_h = std::min(min_h, point.z);
-      max_h = std::max(max_h, point.z);
+      if (!std::isfinite(max_h) || point.z > max_h)
+      {
+        max_h = point.z;
+        max_h_x = point.x;
+        max_h_y = point.y;
+      }
     }
 
     // ------------------------------------------
@@ -2697,11 +2711,29 @@ void Mapping::height_mapping(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud)
       newly_observed_cells.insert(std::make_pair(index(0), index(1)));
       changed_height_cells.insert(std::make_pair(index(0), index(1)));
     }
-    else if (std::isfinite(old_height) &&
-             std::fabs(height - old_height) >=
-                 fine_height_change_threshold)
+    else
     {
-      changed_height_cells.insert(std::make_pair(index(0), index(1)));
+      const bool mean_height_changed =
+          std::isfinite(old_height) &&
+          std::fabs(height - old_height) >=
+              fine_height_change_threshold;
+
+      // A small rock may noticeably raise only the highest return while the
+      // accumulated cell mean hardly changes.  That change must invalidate
+      // the cached fine traversability around the cell as well.
+      const bool max_height_changed =
+          (!std::isfinite(old_max_height) &&
+           std::isfinite(max_h)) ||
+          (std::isfinite(old_max_height) &&
+           std::isfinite(max_h) &&
+           max_h - old_max_height >=
+               fine_height_change_threshold);
+
+      if (mean_height_changed || max_height_changed)
+      {
+        changed_height_cells.insert(
+            std::make_pair(index(0), index(1)));
+      }
     }
   }
 
@@ -4470,6 +4502,204 @@ void Mapping::finegrained_traversability_mapping()
     }
 
     incremental_fine_computed(idx(0), idx(1)) = 1.0f;
+  }
+
+  // ============================================================
+  // Wheeled-vehicle underbody protrusion hard constraint.
+  //
+  // The existing fine pose solver evaluates support, attitude and collision,
+  // but a small rock can be hidden by the accumulated mean elevation or by a
+  // cached low-risk result.  This final pass uses the raw highest return in
+  // each cell, removes the height change expected from the local terrain
+  // plane, inflates the remaining protrusion by the chassis footprint margin,
+  // and overwrites only traversability_fine_wheeled.  Tracked traversability
+  // and every existing planning decision remain unchanged.
+  // ============================================================
+  static bool underbody_configured = false;
+  static bool enable_wheeled_underbody_check = true;
+  static double wheeled_ground_clearance_m = 0.13;
+  static double wheeled_underbody_safety_margin_m = 0.03;
+  static double wheeled_underbody_inflation_radius_m = 0.60;
+  static int wheeled_underbody_min_points = 3;
+
+  if (!underbody_configured)
+  {
+    pnh_.param<bool>("enable_wheeled_underbody_check",
+                     enable_wheeled_underbody_check, true);
+    pnh_.param<double>("wheeled_ground_clearance_m",
+                       wheeled_ground_clearance_m, 0.13);
+    pnh_.param<double>("wheeled_underbody_safety_margin_m",
+                       wheeled_underbody_safety_margin_m, 0.03);
+    pnh_.param<double>("wheeled_underbody_inflation_radius_m",
+                       wheeled_underbody_inflation_radius_m, 0.60);
+    pnh_.param<int>("wheeled_underbody_min_points",
+                    wheeled_underbody_min_points, 3);
+
+    wheeled_ground_clearance_m =
+        std::max(0.01, wheeled_ground_clearance_m);
+    wheeled_underbody_safety_margin_m =
+        std::max(0.0,
+                 std::min(wheeled_underbody_safety_margin_m,
+                          wheeled_ground_clearance_m - 0.005));
+    wheeled_underbody_inflation_radius_m =
+        std::max(0.0, wheeled_underbody_inflation_radius_m);
+    wheeled_underbody_min_points =
+        std::max(1, wheeled_underbody_min_points);
+
+    underbody_configured = true;
+
+    ROS_INFO("Wheeled underbody check: enabled=%s, clearance=%.3f m, "
+             "margin=%.3f m, hard_peak=%.3f m, inflation=%.3f m",
+             enable_wheeled_underbody_check ? "true" : "false",
+             wheeled_ground_clearance_m,
+             wheeled_underbody_safety_margin_m,
+             wheeled_ground_clearance_m -
+                 wheeled_underbody_safety_margin_m,
+             wheeled_underbody_inflation_radius_m);
+  }
+
+  if (enable_wheeled_underbody_check &&
+      height_map_.exists("traversability_fine_wheeled") &&
+      height_map_.exists("elevation_BGK") &&
+      height_map_.exists("max_elevation") &&
+      height_map_.exists("max_elevation_x") &&
+      height_map_.exists("max_elevation_y") &&
+      height_map_.exists("normal_x") &&
+      height_map_.exists("normal_y") &&
+      height_map_.exists("normal_z") &&
+      height_map_.exists("n_points"))
+  {
+    auto &fine_wheeled =
+        height_map_["traversability_fine_wheeled"];
+    auto &elevation_bgk = height_map_["elevation_BGK"];
+    auto &max_elevation = height_map_["max_elevation"];
+    auto &max_elevation_x = height_map_["max_elevation_x"];
+    auto &max_elevation_y = height_map_["max_elevation_y"];
+    auto &normal_x = height_map_["normal_x"];
+    auto &normal_y = height_map_["normal_y"];
+    auto &normal_z = height_map_["normal_z"];
+    auto &n_points = height_map_["n_points"];
+
+    const double hard_peak_threshold =
+        std::max(0.005,
+                 wheeled_ground_clearance_m -
+                     wheeled_underbody_safety_margin_m);
+
+    // At coarse map resolutions a physical radius smaller than one grid cell
+    // would not reach any neighbouring centre.  Guarantee one-cell inflation
+    // so a vehicle-centre path cannot skim past a rock with its chassis above
+    // the occupied cell.
+    const double effective_inflation_radius =
+        std::max(wheeled_underbody_inflation_radius_m,
+                 1.01 * map_resolution_);
+
+    std::set<std::pair<int, int>> inflated_underbody_obstacles;
+    int protrusion_source_count = 0;
+
+    for (grid_map::CircleIterator it(
+             height_map_,
+             grid_map::Position(current_pos.x(), current_pos.y()),
+             max_range_);
+         !it.isPastEnd(); ++it)
+    {
+      const grid_map::Index source_idx = *it;
+
+      if (n_points(source_idx(0), source_idx(1)) <
+          static_cast<float>(wheeled_underbody_min_points))
+      {
+        continue;
+      }
+
+      const float center_z =
+          elevation_bgk(source_idx(0), source_idx(1));
+      const float peak_z =
+          max_elevation(source_idx(0), source_idx(1));
+      const float peak_x =
+          max_elevation_x(source_idx(0), source_idx(1));
+      const float peak_y =
+          max_elevation_y(source_idx(0), source_idx(1));
+
+      if (!std::isfinite(center_z) ||
+          !std::isfinite(peak_z) ||
+          !std::isfinite(peak_x) ||
+          !std::isfinite(peak_y))
+      {
+        continue;
+      }
+
+      grid_map::Position source_position;
+      if (!height_map_.getPosition(source_idx, source_position))
+      {
+        continue;
+      }
+
+      // Predict the normal sloped-ground height at the exact XY location of
+      // the maximum return.  Only height above this plane is a protrusion.
+      double expected_ground_z = static_cast<double>(center_z);
+      const float nx = normal_x(source_idx(0), source_idx(1));
+      const float ny = normal_y(source_idx(0), source_idx(1));
+      const float nz = normal_z(source_idx(0), source_idx(1));
+
+      if (std::isfinite(nx) &&
+          std::isfinite(ny) &&
+          std::isfinite(nz) &&
+          std::fabs(nz) > 0.20f)
+      {
+        const double dx =
+            static_cast<double>(peak_x) - source_position.x();
+        const double dy =
+            static_cast<double>(peak_y) - source_position.y();
+
+        expected_ground_z -=
+            (static_cast<double>(nx) * dx +
+             static_cast<double>(ny) * dy) /
+            static_cast<double>(nz);
+      }
+
+      const double protrusion_height =
+          static_cast<double>(peak_z) - expected_ground_z;
+
+      if (!std::isfinite(protrusion_height) ||
+          protrusion_height < hard_peak_threshold)
+      {
+        continue;
+      }
+
+      ++protrusion_source_count;
+
+      // Inflate around the actual maximum-return position rather than the
+      // source-cell centre, which is important for 1 m mapping cells.
+      const grid_map::Position peak_position(
+          static_cast<double>(peak_x),
+          static_cast<double>(peak_y));
+
+      for (grid_map::CircleIterator inflate_it(
+               height_map_, peak_position,
+               effective_inflation_radius);
+           !inflate_it.isPastEnd(); ++inflate_it)
+      {
+        inflated_underbody_obstacles.insert(
+            std::make_pair((*inflate_it)(0),
+                           (*inflate_it)(1)));
+      }
+    }
+
+    // This overwrite deliberately runs after the existing fine pose solver,
+    // so no later success result can turn a belly-clearance obstacle back into
+    // traversable terrain.  Only the wheeled layer is changed.
+    for (const auto &cell : inflated_underbody_obstacles)
+    {
+      fine_wheeled(cell.first, cell.second) = 1.0f;
+    }
+
+    ROS_INFO_THROTTLE(
+        1.0,
+        "[WheeledUnderbody] source_peaks=%d, blocked_cells=%zu, "
+        "threshold=%.3f m, inflation=%.3f m",
+        protrusion_source_count,
+        inflated_underbody_obstacles.size(),
+        hard_peak_threshold,
+        effective_inflation_radius);
   }
 
   ROS_INFO("Platform traversability statistics:");
