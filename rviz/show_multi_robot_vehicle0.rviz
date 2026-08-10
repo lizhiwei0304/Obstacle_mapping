@@ -5,8 +5,9 @@ Panels:
     Property Tree Widget:
       Expanded:
         - /RegisteredScan1/Autocompute Value Bounds1
+        - /PointCloud23
       Splitter Ratio: 0.5543237328529358
-    Tree Height: 305
+    Tree Height: 558
   - Class: rviz/Selection
     Name: Selection
   - Class: rviz/Tool Properties
@@ -481,7 +482,7 @@ Visualization Manager:
       Queue Size: 10
       Selectable: true
       Size (Pixels): 3
-      Size (m): 0.10000000149011612
+      Size (m): 0.05000000074505806
       Style: Flat Squares
       Topic: /vehicle0/explored_areas
       Unreliable: false
@@ -563,7 +564,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 52.376121520996094
+      Distance: 57.816532135009766
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -571,17 +572,17 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: -4.8680901527404785
-        Y: 1.0067975521087646
-        Z: 2.0289835929870605
+        X: -0.18631789088249207
+        Y: 2.239304304122925
+        Z: 1.184871792793274
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 1.3097963333129883
+      Pitch: 1.5697963237762451
       Target Frame: vehicle0/vehicle
-      Yaw: 1.9281867742538452
+      Yaw: 1.5531868934631348
     Saved: ~
 Window Geometry:
   Displays:

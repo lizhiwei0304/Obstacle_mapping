@@ -89,7 +89,7 @@
     <!-- <param name="wheeled_ground_clearance_m" value="0.13" />
     <param name="wheeled_underbody_safety_margin_m" value="0.08" /> -->
     <param name="wheeled_ground_clearance_m" value="0.25" />
-    <param name="wheeled_underbody_safety_margin_m" value="0.15" />
+    <param name="wheeled_underbody_safety_margin_m" value="0.20" />
     <param name="wheeled_underbody_inflation_radius_m" value="0.60" />
     <param name="wheeled_underbody_min_points" value="3" />
 
