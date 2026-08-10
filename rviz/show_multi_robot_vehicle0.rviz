@@ -6,7 +6,7 @@ Panels:
       Expanded:
         - /RegisteredScan1/Autocompute Value Bounds1
       Splitter Ratio: 0.5543237328529358
-    Tree Height: 558
+    Tree Height: 305
   - Class: rviz/Selection
     Name: Selection
   - Class: rviz/Tool Properties
@@ -599,5 +599,5 @@ Window Geometry:
   Views:
     collapsed: true
   Width: 860
-  X: 842
+  X: 863
   Y: 44
