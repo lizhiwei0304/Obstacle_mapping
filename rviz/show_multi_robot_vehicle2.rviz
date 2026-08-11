@@ -5,6 +5,7 @@ Panels:
     Property Tree Widget:
       Expanded:
         - /RegisteredScan1/Autocompute Value Bounds1
+        - /LocalPath1
       Splitter Ratio: 0.5543237328529358
     Tree Height: 305
   - Class: rviz/Selection
@@ -418,7 +419,7 @@ Visualization Manager:
       Length: 0.30000001192092896
       Line Style: Lines
       Line Width: 0.029999999329447746
-      Name: Path
+      Name: GlobalPath
       Offset:
         X: 0
         Y: 0
@@ -448,7 +449,7 @@ Visualization Manager:
       Invert Rainbow: false
       Max Color: 255; 255; 255
       Min Color: 0; 0; 0
-      Name: PointCloud2
+      Name: Trajectory
       Position Transformer: XYZ
       Queue Size: 10
       Selectable: true
@@ -476,7 +477,7 @@ Visualization Manager:
       Invert Rainbow: false
       Max Color: 255; 255; 255
       Min Color: 0; 0; 0
-      Name: PointCloud2
+      Name: ExporationArea
       Position Transformer: XYZ
       Queue Size: 10
       Selectable: true
@@ -487,6 +488,30 @@ Visualization Manager:
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: true
+      Value: true
+    - Alpha: 1
+      Buffer Length: 1
+      Class: rviz/Path
+      Color: 85; 85; 255
+      Enabled: true
+      Head Diameter: 0.30000001192092896
+      Head Length: 0.20000000298023224
+      Length: 0.30000001192092896
+      Line Style: Billboards
+      Line Width: 0.30000001192092896
+      Name: LocalPath
+      Offset:
+        X: 0
+        Y: 0
+        Z: 0
+      Pose Color: 255; 85; 255
+      Pose Style: None
+      Queue Size: 10
+      Radius: 0.029999999329447746
+      Shaft Diameter: 0.10000000149011612
+      Shaft Length: 0.10000000149011612
+      Topic: /vehicle2/local_path
+      Unreliable: false
       Value: true
   Enabled: true
   Global Options:
@@ -518,7 +543,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 42.47153091430664
+      Distance: 39.96909713745117
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -554,5 +579,5 @@ Window Geometry:
   Views:
     collapsed: true
   Width: 860
-  X: 0
+  X: 1700
   Y: 44

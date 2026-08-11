@@ -8,7 +8,7 @@
     <arg name="start_topic" default="/start_exploration" />
 
     <!-- Replace these defaults with the actual body dimensions of each UGV. -->
-    <arg name="vehicle_1_length" default="1.0" />
+    <arg name="vehicle_1_length" default="1.2" />
     <arg name="vehicle_1_width" default="0.8" />
     <arg name="vehicle_2_length" default="1.0" />
     <arg name="vehicle_2_width" default="0.8" />

@@ -60,7 +60,7 @@
     <arg name="wheeled_roughness_limit" default="0.04" />
     <arg name="wheeled_step_limit_m" default="0.04" /> -->
     <arg name="wheeled_slope_limit_deg" default="18.0" />
-    <arg name="wheeled_roughness_limit" default="0.10" />
+    <arg name="wheeled_roughness_limit" default="0.12" />
     <arg name="wheeled_step_limit_m" default="0.10" />
     <arg name="wheeled_geo_slope_weight" default="0.34" />
     <arg name="wheeled_geo_roughness_weight" default="0.33" />
@@ -84,11 +84,9 @@
     <arg name="tracked_efficiency_rough_bonus" default="0.00" />
 
     <!-- 轮式车底盘托底检测 -->
-    <param name="enable_wheeled_underbody_check" value="true" />
-    <!-- <param name="wheeled_ground_clearance_m" value="0.13" />
-    <param name="wheeled_underbody_safety_margin_m" value="0.08" /> -->
-    <param name="wheeled_ground_clearance_m" value="0.25" />
-    <param name="wheeled_underbody_safety_margin_m" value="0.20" />
+    <param name="enable_wheeled_underbody_check" value="false" />
+    <param name="wheeled_ground_clearance_m" value="0.13" />
+    <param name="wheeled_underbody_safety_margin_m" value="0.08" />
     <param name="wheeled_underbody_inflation_radius_m" value="0.60" />
     <param name="wheeled_underbody_min_points" value="3" />
 
@@ -287,5 +285,5 @@
     </node>
 
     <!-- RViz visualization -->
-    <node name="rviz" pkg="rviz" type="rviz" args="-d $(find obstacle_mapping)/rviz/show_multi_robot_$(arg ns).rviz" output="screen" />
+    <node name="rviz" pkg="rviz" type="rviz" args="-d $(find obstacle_mapping)/rviz/show_multi_robot_$(arg ns).rviz" output="screen" respawn="true"/>
 </launch>
