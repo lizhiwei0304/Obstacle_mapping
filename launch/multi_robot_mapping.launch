@@ -1,28 +1,31 @@
 <?xml version="1.0"?>
 <launch>
-    <!-- Multi-robot mapping node -->
-    <arg name="id0" default="0" />
-    <arg name="id1" default="1" />
-    <arg name="id2" default="2" />
-    <arg name="namespace_1" default="vehicle$(arg id0)" />
-    <arg name="namespace_2" default="vehicle$(arg id1)" />
-    <arg name="namespace_3" default="vehicle$(arg id2)" />
+    <arg name="namespace_1" default="vehicle0" />
+    <arg name="namespace_2" default="vehicle1" />
+    <arg name="namespace_3" default="vehicle2" />
 
     <arg name="wait_for_start" default="false" />
     <arg name="start_topic" default="/start_exploration" />
+
+    <!-- Replace these defaults with the actual body dimensions of each UGV. -->
+    <arg name="vehicle_1_length" default="1.0" />
+    <arg name="vehicle_1_width" default="0.8" />
+    <arg name="vehicle_2_length" default="1.0" />
+    <arg name="vehicle_2_width" default="0.8" />
+    <arg name="vehicle_3_length" default="1.0" />
+    <arg name="vehicle_3_width" default="0.8" />
+
+    <!-- Applied to front, rear, left and right independently. -->
+    <arg name="dynamic_vehicle_inflation" default="0.8" />
+    <arg name="dynamic_vehicle_pose_timeout" default="0.5" />
 
     <group ns="$(arg namespace_1)">
         <node name="cloud_merger_and_accumulator" pkg="obstacle_mapping" type="cloud_merger_and_accumulator.py" output="screen">
             <param name="wait_for_start" value="$(arg wait_for_start)" />
             <param name="start_topic" value="$(arg start_topic)" />
-
-            <!-- Smaller rolling window reduces stale points and merge cost. -->
             <param name="window_size" value="5" />
-            <!-- Publish every second synchronized input instead of every fifth. -->
             <param name="publish_every_n" value="2" />
-            <!-- A 0.2 m voxel is sufficient for the downstream 0.5 m grid. -->
             <param name="voxel_leaf" value="0.2" />
-
             <param name="prefer_intensity" value="true" />
             <param name="terrain_map" value="terrain_map" />
             <param name="terrain_map_ext" value="terrain_map_ext" />
@@ -36,21 +39,33 @@
         <include file="$(find obstacle_mapping)/launch/robot_mapping.launch">
             <arg name="ns" value="$(arg namespace_1)" />
         </include>
-    </group>
 
+        <node name="dynamic_vehicle_obstacle_overlay" pkg="obstacle_mapping" type="dynamic_vehicle_obstacle_overlay.py" output="screen">
+            <param name="self_vehicle" value="$(arg namespace_1)" />
+            <param name="other_vehicle_count" value="2" />
+            <param name="other_vehicle_1_name" value="$(arg namespace_2)" />
+            <param name="other_vehicle_1_length" value="$(arg vehicle_2_length)" />
+            <param name="other_vehicle_1_width" value="$(arg vehicle_2_width)" />
+            <param name="other_vehicle_2_name" value="$(arg namespace_3)" />
+            <param name="other_vehicle_2_length" value="$(arg vehicle_3_length)" />
+            <param name="other_vehicle_2_width" value="$(arg vehicle_3_width)" />
+            <param name="inflation" value="$(arg dynamic_vehicle_inflation)" />
+            <param name="pose_timeout" value="$(arg dynamic_vehicle_pose_timeout)" />
+            <param name="dynamic_obstacle_intensity" value="1.0" />
+            <param name="input_topic" value="local_traversability_cloud_raw" />
+            <param name="output_topic" value="local_traversability_cloud" />
+            <param name="odom_topic" value="state_estimation" />
+            <param name="strict_frame_check" value="true" />
+        </node>
+    </group>
 
     <group ns="$(arg namespace_2)">
         <node name="cloud_merger_and_accumulator" pkg="obstacle_mapping" type="cloud_merger_and_accumulator.py" output="screen">
             <param name="wait_for_start" value="$(arg wait_for_start)" />
             <param name="start_topic" value="$(arg start_topic)" />
-
-            <!-- Smaller rolling window reduces stale points and merge cost. -->
             <param name="window_size" value="5" />
-            <!-- Publish every second synchronized input instead of every fifth. -->
             <param name="publish_every_n" value="2" />
-            <!-- A 0.2 m voxel is sufficient for the downstream 0.5 m grid. -->
             <param name="voxel_leaf" value="0.2" />
-
             <param name="prefer_intensity" value="true" />
             <param name="terrain_map" value="terrain_map" />
             <param name="terrain_map_ext" value="terrain_map_ext" />
@@ -64,20 +79,33 @@
         <include file="$(find obstacle_mapping)/launch/robot_mapping.launch">
             <arg name="ns" value="$(arg namespace_2)" />
         </include>
+
+        <node name="dynamic_vehicle_obstacle_overlay" pkg="obstacle_mapping" type="dynamic_vehicle_obstacle_overlay.py" output="screen">
+            <param name="self_vehicle" value="$(arg namespace_2)" />
+            <param name="other_vehicle_count" value="2" />
+            <param name="other_vehicle_1_name" value="$(arg namespace_1)" />
+            <param name="other_vehicle_1_length" value="$(arg vehicle_1_length)" />
+            <param name="other_vehicle_1_width" value="$(arg vehicle_1_width)" />
+            <param name="other_vehicle_2_name" value="$(arg namespace_3)" />
+            <param name="other_vehicle_2_length" value="$(arg vehicle_3_length)" />
+            <param name="other_vehicle_2_width" value="$(arg vehicle_3_width)" />
+            <param name="inflation" value="$(arg dynamic_vehicle_inflation)" />
+            <param name="pose_timeout" value="$(arg dynamic_vehicle_pose_timeout)" />
+            <param name="dynamic_obstacle_intensity" value="1.0" />
+            <param name="input_topic" value="local_traversability_cloud_raw" />
+            <param name="output_topic" value="local_traversability_cloud" />
+            <param name="odom_topic" value="state_estimation" />
+            <param name="strict_frame_check" value="true" />
+        </node>
     </group>
 
     <group ns="$(arg namespace_3)">
         <node name="cloud_merger_and_accumulator" pkg="obstacle_mapping" type="cloud_merger_and_accumulator.py" output="screen">
             <param name="wait_for_start" value="$(arg wait_for_start)" />
             <param name="start_topic" value="$(arg start_topic)" />
-
-            <!-- Smaller rolling window reduces stale points and merge cost. -->
             <param name="window_size" value="5" />
-            <!-- Publish every second synchronized input instead of every fifth. -->
             <param name="publish_every_n" value="2" />
-            <!-- A 0.2 m voxel is sufficient for the downstream 0.5 m grid. -->
             <param name="voxel_leaf" value="0.2" />
-
             <param name="prefer_intensity" value="true" />
             <param name="terrain_map" value="terrain_map" />
             <param name="terrain_map_ext" value="terrain_map_ext" />
@@ -91,6 +119,23 @@
         <include file="$(find obstacle_mapping)/launch/robot_mapping.launch">
             <arg name="ns" value="$(arg namespace_3)" />
         </include>
-    </group>
 
+        <node name="dynamic_vehicle_obstacle_overlay" pkg="obstacle_mapping" type="dynamic_vehicle_obstacle_overlay.py" output="screen">
+            <param name="self_vehicle" value="$(arg namespace_3)" />
+            <param name="other_vehicle_count" value="2" />
+            <param name="other_vehicle_1_name" value="$(arg namespace_1)" />
+            <param name="other_vehicle_1_length" value="$(arg vehicle_1_length)" />
+            <param name="other_vehicle_1_width" value="$(arg vehicle_1_width)" />
+            <param name="other_vehicle_2_name" value="$(arg namespace_2)" />
+            <param name="other_vehicle_2_length" value="$(arg vehicle_2_length)" />
+            <param name="other_vehicle_2_width" value="$(arg vehicle_2_width)" />
+            <param name="inflation" value="$(arg dynamic_vehicle_inflation)" />
+            <param name="pose_timeout" value="$(arg dynamic_vehicle_pose_timeout)" />
+            <param name="dynamic_obstacle_intensity" value="1.0" />
+            <param name="input_topic" value="local_traversability_cloud_raw" />
+            <param name="output_topic" value="local_traversability_cloud" />
+            <param name="odom_topic" value="state_estimation" />
+            <param name="strict_frame_check" value="true" />
+        </node>
+    </group>
 </launch>
