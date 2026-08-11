@@ -2,7 +2,7 @@
  * @Author: lee lizw_0304@163.com
  * @Date: 2026-07-15 21:21:31
  * @LastEditors: lee lizw_0304@163.com
- * @LastEditTime: 2026-08-09 19:33:18
+ * @LastEditTime: 2026-08-11 23:53:56
  * @FilePath: /src/obstacle_mapping/src/multi_robot_mapping.cpp
  * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
  */
@@ -25,6 +25,8 @@
 #include <limits>
 #include <array>
 #include <vector>
+#include <deque>
+#include <unordered_map>
 #include <set>
 #include <utility>
 #include <stdexcept>
@@ -59,6 +61,42 @@ namespace
   // 以精细化周期编号作为缓存世代，保证同一周期内复用地形
   // 子图，下一周期地图更新后不会沿用过期缓存。
   thread_local std::size_t fine_cycle_generation = 0;
+
+  struct HeightFrameSample
+  {
+    float height = std::numeric_limits<float>::quiet_NaN();
+    float low = std::numeric_limits<float>::quiet_NaN();
+    float high = std::numeric_limits<float>::quiet_NaN();
+    float high_x = std::numeric_limits<float>::quiet_NaN();
+    float high_y = std::numeric_limits<float>::quiet_NaN();
+    int point_count = 0;
+  };
+
+  struct RawCellPoint
+  {
+    float x;
+    float y;
+    float z;
+  };
+
+  struct CellHeightHistory
+  {
+    std::deque<HeightFrameSample> samples;
+    std::uint64_t last_seen_cycle = 0;
+  };
+
+  inline std::uint64_t MakeGridCellKey(int row, int col)
+  {
+    return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(row)) << 32) |
+           static_cast<std::uint32_t>(col);
+  }
+
+  inline grid_map::Index GridCellIndexFromKey(std::uint64_t key)
+  {
+    return grid_map::Index(
+        static_cast<int>(static_cast<std::uint32_t>(key >> 32)),
+        static_cast<int>(static_cast<std::uint32_t>(key)));
+  }
 
   // Local XYZI terrain-map configuration for the original local_planner.
   // The planner subscribes to /terrain_map and classifies a point as an
@@ -2564,6 +2602,14 @@ void Mapping::height_mapping(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud)
   // gridmap_publish_mutex_：保护 height_map_ 的写操作，避免与发布线程/其它更新线程并发读写冲突
   std::lock_guard<std::mutex> lock(gridmap_publish_mutex_);
 
+  // 周期性刷新需要以当前车辆位置为中心。height_mapping() 本身没有
+  // current_pos 参数，因此在本函数内获取一次线程安全的位姿快照。
+  Eigen::Vector3d current_pos;
+  {
+    std::lock_guard<std::mutex> pose_lock(vehicle_pose_mutex_);
+    current_pos = vehicle_position_;
+  }
+
   // 从 grid_map 中取出不同 layer 的引用（Matrix）
   // 这些 layer 是二维栅格，每个 cell 存一个值
   auto &elevation = height_map_["elevation"];         // 平均高度（或当前估计高度）
@@ -2611,128 +2657,271 @@ void Mapping::height_mapping(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud)
              fine_height_change_threshold, fine_recompute_radius);
   }
 
-  int cell_count = 0;    // 统计：成功落在地图范围内并更新过的点数（这里命名是 cell_count，但实际上是“点更新次数”）
-  int out_of_bounds = 0; // 统计：落在地图外的点数
+  // A permanent all-time mean cannot recover from a vehicle, dust return or
+  // short-lived scan artifact.  Keep a bounded history of per-frame robust
+  // heights instead.  Static terrain remains stable, while a cell that is
+  // observed again after a dynamic object leaves converges back to the ground.
+  static bool history_configured = false;
+  static int dynamic_history_frames = 15;
+  static int dynamic_history_expire_frames = 150;
+  static double dynamic_frame_low_quantile = 0.10;
+  static double dynamic_frame_high_quantile = 0.90;
+  static int incremental_refresh_interval_frames = 10;
+  static double near_robot_refresh_radius = 3.0;
+  static double periodic_refresh_radius = -1.0;
+
+  if (!history_configured)
+  {
+    pnh_.param<int>("dynamic_history_frames",
+                    dynamic_history_frames, 15);
+    pnh_.param<int>("dynamic_history_expire_frames",
+                    dynamic_history_expire_frames, 150);
+    pnh_.param<double>("dynamic_frame_low_quantile",
+                       dynamic_frame_low_quantile, 0.10);
+    pnh_.param<double>("dynamic_frame_high_quantile",
+                       dynamic_frame_high_quantile, 0.90);
+    pnh_.param<int>("incremental_refresh_interval_frames",
+                    incremental_refresh_interval_frames, 10);
+    pnh_.param<double>("near_robot_refresh_radius",
+                       near_robot_refresh_radius, 3.0);
+    pnh_.param<double>("periodic_refresh_radius",
+                       periodic_refresh_radius, -1.0);
+
+    dynamic_history_frames = std::max(3, dynamic_history_frames);
+    dynamic_history_expire_frames = std::max(
+        dynamic_history_frames, dynamic_history_expire_frames);
+    dynamic_frame_low_quantile = std::max(
+        0.0, std::min(0.49, dynamic_frame_low_quantile));
+    dynamic_frame_high_quantile = std::max(
+        0.51, std::min(1.0, dynamic_frame_high_quantile));
+    incremental_refresh_interval_frames = std::max(
+        1, incremental_refresh_interval_frames);
+    near_robot_refresh_radius = std::min(
+        max_range_, std::max(0.0, near_robot_refresh_radius));
+    if (periodic_refresh_radius <= 0.0)
+    {
+      // Refresh the execution-relevant neighborhood by default.  Rechecking
+      // an entire long-range map with the full vehicle pose solver at once
+      // creates a large periodic CPU spike; deployments may explicitly raise
+      // this parameter when full-range periodic verification is required.
+      periodic_refresh_radius = std::min(max_range_, 8.0);
+    }
+    periodic_refresh_radius = std::min(
+        max_range_, std::max(
+                        near_robot_refresh_radius,
+                        periodic_refresh_radius));
+    history_configured = true;
+
+    ROS_INFO("Temporal terrain maintenance: history=%d frames, expire=%d "
+             "frames, frame_quantile=[%.2f, %.2f], refresh_every=%d, "
+             "near_radius=%.2f m, periodic_radius=%.2f m",
+             dynamic_history_frames, dynamic_history_expire_frames,
+             dynamic_frame_low_quantile, dynamic_frame_high_quantile,
+             incremental_refresh_interval_frames,
+             near_robot_refresh_radius, periodic_refresh_radius);
+  }
+
+  static std::unordered_map<std::uint64_t, CellHeightHistory>
+      height_histories;
+  static std::uint64_t mapping_cycle = 0;
+  ++mapping_cycle;
+
+  int cell_count = 0;
+  int out_of_bounds = 0;
 
   // elevation_BGK：用于 BGK 插值/预测后的高度层
   // 你后面会对“新观测到的格子”用真实观测高度去覆盖 BGK 的值，避免 BGK 继续占用这些格子
   auto &elevation_bgk = height_map_["elevation_BGK"];
+  auto &interpolated = height_map_["interpolated"];
 
   // newly_observed_cells：记录本帧中“从未观测（npts==0）变为有观测（npts>0）”的格子索引
   // 用 set 去重，确保每个格子只记录一次
   std::set<std::pair<int, int>> newly_observed_cells;
   std::set<std::pair<int, int>> changed_height_cells;
 
-  // ==========================
-  // [A] 遍历点云：逐点更新对应栅格的统计量
-  // ==========================
+  // First aggregate each scan by cell.  One dense scan must not outweigh
+  // many later scans, so the temporal history stores one robust sample per
+  // cell and per frame rather than every raw return forever.
+  std::unordered_map<std::uint64_t, std::vector<RawCellPoint>> frame_cells;
+  frame_cells.reserve(cloud->size() / 4 + 1);
+
   for (const auto &point : cloud->points)
   {
-    // 将点的 XY 转成 grid_map 的 Position（二维位置）
     grid_map::Position pos(point.x, point.y);
-    grid_map::Index index; // 栅格索引 (i, j)
-
-    // getIndex：把连续坐标 pos 映射到栅格 index
-    // 若 pos 不在地图范围内，返回 false
+    grid_map::Index index;
     if (!height_map_.getIndex(pos, index))
     {
       out_of_bounds++;
       continue;
     }
-
-    // 统计“成功映射到地图内部的点更新次数”
     cell_count++;
+    frame_cells[MakeGridCellKey(index(0), index(1))].push_back(
+        RawCellPoint{point.x, point.y, point.z});
+  }
 
-    // 取出该 cell 的各层数据引用（引用方式能避免重复索引开销）
-    auto &height = elevation(index(0), index(1));    // 当前高度估计（均值）
-    auto &var = variance(index(0), index(1));        // 当前方差
-    auto &npts = n_points(index(0), index(1));       // 当前累计点数
-    auto &min_h = min_elevation(index(0), index(1)); // 当前最小高度
-    auto &max_h = max_elevation(index(0), index(1)); // 当前最大高度
+  for (auto &entry : frame_cells)
+  {
+    const grid_map::Index index = GridCellIndexFromKey(entry.first);
+    auto &points = entry.second;
+    if (points.empty())
+    {
+      continue;
+    }
+
+    std::sort(points.begin(), points.end(),
+              [](const RawCellPoint &a, const RawCellPoint &b)
+              { return a.z < b.z; });
+
+    const auto quantileIndex = [&](double quantile) -> std::size_t
+    {
+      return std::min(
+          points.size() - 1,
+          static_cast<std::size_t>(std::llround(
+              quantile * static_cast<double>(points.size() - 1))));
+    };
+
+    const std::size_t middle_index = quantileIndex(0.50);
+    const std::size_t low_index = quantileIndex(dynamic_frame_low_quantile);
+    const std::size_t high_index = quantileIndex(dynamic_frame_high_quantile);
+
+    HeightFrameSample frame_sample;
+    frame_sample.height = points[middle_index].z;
+    frame_sample.low = points[low_index].z;
+    frame_sample.high = points[high_index].z;
+    frame_sample.high_x = points[high_index].x;
+    frame_sample.high_y = points[high_index].y;
+    frame_sample.point_count = static_cast<int>(points.size());
+
+    auto history_it = height_histories.find(entry.first);
+    const bool history_restarted = history_it == height_histories.end();
+    if (history_restarted)
+    {
+      history_it = height_histories
+                       .emplace(entry.first, CellHeightHistory())
+                       .first;
+    }
+
+    CellHeightHistory &history = history_it->second;
+    history.last_seen_cycle = mapping_cycle;
+    history.samples.push_back(frame_sample);
+    while (history.samples.size() >
+           static_cast<std::size_t>(dynamic_history_frames))
+    {
+      history.samples.pop_front();
+    }
+
+    auto &height = elevation(index(0), index(1));
+    auto &var = variance(index(0), index(1));
+    auto &npts = n_points(index(0), index(1));
+    auto &min_h = min_elevation(index(0), index(1));
+    auto &max_h = max_elevation(index(0), index(1));
     auto &max_h_x = max_elevation_x(index(0), index(1));
     auto &max_h_y = max_elevation_y(index(0), index(1));
 
-    // 判断这个 cell 在本次更新之前是否未被观测过
-    // npts==0 => 未观测（高度可能来自 BGK 或默认值）
-    bool was_unobserved = (npts == 0);
+    const bool was_unobserved = npts <= 0.0f;
     const float old_height = height;
+    const float old_min_height = min_h;
     const float old_max_height = max_h;
 
-    if (npts == 0)
+    std::vector<float> temporal_heights;
+    temporal_heights.reserve(history.samples.size());
+    int effective_point_count = 0;
+    float window_low = std::numeric_limits<float>::infinity();
+    float window_high = -std::numeric_limits<float>::infinity();
+    float window_high_x = frame_sample.high_x;
+    float window_high_y = frame_sample.high_y;
+
+    for (const auto &sample : history.samples)
     {
-      // ------------------------------------------
-      // [A1] cell 第一次被观测：初始化统计量
-      // ------------------------------------------
-      // 第一个点直接作为均值
-      height = point.z;
-
-      // 方差初始化为 0（也可以考虑给一个小先验，如 eps）
-      var = 0.0f;
-
-      // min/max 都初始化为该点高度
-      min_h = point.z;
-      max_h = point.z;
-      max_h_x = point.x;
-      max_h_y = point.y;
-
-      // 点数置为 1
-      npts = 1;
-    }
-    else
-    {
-      // ------------------------------------------
-      // [A2] cell 已有观测：增量更新统计量
-      // ------------------------------------------
-      // 点数 +1
-      npts += 1;
-
-      // updateHeightStats：通常是在线均值/方差更新（Welford 或类似）
-      // 输入：当前均值 height、方差 var、样本数 npts、新样本 point.z
-      // 输出：更新后的均值/方差
-      updateHeightStats(height, var, npts, point.z);
-
-      // 更新 min/max
-      min_h = std::min(min_h, point.z);
-      if (!std::isfinite(max_h) || point.z > max_h)
+      temporal_heights.push_back(sample.height);
+      effective_point_count += sample.point_count;
+      window_low = std::min(window_low, sample.low);
+      if (sample.high > window_high)
       {
-        max_h = point.z;
-        max_h_x = point.x;
-        max_h_y = point.y;
+        window_high = sample.high;
+        window_high_x = sample.high_x;
+        window_high_y = sample.high_y;
       }
     }
 
-    // ------------------------------------------
-    // [A3] 记录“从未观测变为已观测”的格子
-    // ------------------------------------------
-    // 如果之前 npts==0，说明该 cell 的 BGK 高度现在应该被真实观测高度覆盖
-    // 但这里不立刻覆盖 BGK，而是先记录下来，循环结束后再统一更新（减少重复写）
+    std::sort(temporal_heights.begin(), temporal_heights.end());
+    const std::size_t temporal_middle = temporal_heights.size() / 2;
+    const float robust_height =
+        temporal_heights.size() % 2 == 0
+            ? 0.5f * (temporal_heights[temporal_middle - 1] +
+                      temporal_heights[temporal_middle])
+            : temporal_heights[temporal_middle];
+
+    double squared_error_sum = 0.0;
+    for (const float sample_height : temporal_heights)
+    {
+      const double error =
+          static_cast<double>(sample_height) - robust_height;
+      squared_error_sum += error * error;
+    }
+
+    height = robust_height;
+    var = temporal_heights.size() > 1
+              ? static_cast<float>(squared_error_sum /
+                                   static_cast<double>(temporal_heights.size() - 1))
+              : 0.0f;
+    npts = static_cast<float>(std::max(1, effective_point_count));
+    min_h = window_low;
+    max_h = window_high;
+    max_h_x = window_high_x;
+    max_h_y = window_high_y;
+
+    // A genuinely observed cell must always expose the newest robust height
+    // to geometry.  Limiting this synchronization to >=2 cm changes lets a
+    // sequence of smaller corrections accumulate in elevation while
+    // elevation_BGK remains permanently behind.
+    elevation_bgk(index(0), index(1)) = height;
+
     if (was_unobserved)
     {
-      newly_observed_cells.insert(std::make_pair(index(0), index(1)));
-      changed_height_cells.insert(std::make_pair(index(0), index(1)));
+      newly_observed_cells.emplace(index(0), index(1));
     }
-    else
+
+    const auto finiteChanged = [&](float old_value, float new_value)
     {
-      const bool mean_height_changed =
-          std::isfinite(old_height) &&
-          std::fabs(height - old_height) >=
-              fine_height_change_threshold;
-
-      // A small rock may noticeably raise only the highest return while the
-      // accumulated cell mean hardly changes.  That change must invalidate
-      // the cached fine traversability around the cell as well.
-      const bool max_height_changed =
-          (!std::isfinite(old_max_height) &&
-           std::isfinite(max_h)) ||
-          (std::isfinite(old_max_height) &&
-           std::isfinite(max_h) &&
-           max_h - old_max_height >=
-               fine_height_change_threshold);
-
-      if (mean_height_changed || max_height_changed)
+      if (std::isfinite(old_value) != std::isfinite(new_value))
       {
-        changed_height_cells.insert(
-            std::make_pair(index(0), index(1)));
+        return true;
+      }
+      return std::isfinite(old_value) &&
+             std::fabs(new_value - old_value) >=
+                 fine_height_change_threshold;
+    };
+
+    // A restarted history deliberately replaces an arbitrarily old dynamic
+    // observation as soon as this cell is seen again.
+    if (was_unobserved || history_restarted ||
+        finiteChanged(old_height, height) ||
+        finiteChanged(old_min_height, min_h) ||
+        finiteChanged(old_max_height, max_h))
+    {
+      changed_height_cells.emplace(index(0), index(1));
+    }
+
+    // A real observation supersedes any earlier inferred classification.
+    interpolated(index(0), index(1)) = 0.0f;
+  }
+
+  // Drop inactive temporal buffers periodically.  The persistent elevation
+  // is retained; when such a cell is observed again, a fresh bounded history
+  // replaces the old potentially dynamic state immediately.
+  if (mapping_cycle % 100 == 0)
+  {
+    for (auto it = height_histories.begin(); it != height_histories.end();)
+    {
+      if (mapping_cycle - it->second.last_seen_cycle >
+          static_cast<std::uint64_t>(dynamic_history_expire_frames))
+      {
+        it = height_histories.erase(it);
+      }
+      else
+      {
+        ++it;
       }
     }
   }
@@ -2751,12 +2940,14 @@ void Mapping::height_mapping(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud)
     // 真实观测发生明显变化时，同步更新 BGK 高程。
     elevation_bgk(cell_idx.first, cell_idx.second) =
         elevation(cell_idx.first, cell_idx.second);
+    interpolated(cell_idx.first, cell_idx.second) = 0.0f;
     bgk_updated_cells++;
   }
 
   // 一个高程变化会影响周边的法向、台阶以及整车支撑姿态。
   // 仅把这些依赖区域标记为 dirty，其他格子沿用已有结果。
   std::size_t invalidated_cells = 0;
+  std::size_t invalidated_bgk_cells = 0;
   for (const auto &cell_idx : changed_height_cells)
   {
     grid_map::Position changed_position;
@@ -2771,6 +2962,19 @@ void Mapping::height_mapping(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud)
                                      fine_recompute_radius);
          !it.isPastEnd(); ++it)
     {
+      // An inferred height depends on nearby real observations.  Allow BGK to
+      // refresh it when any source height in its dependency area changes.
+      // The old value must also be removed here.  Clearing only the flag lets
+      // a failed BGK retry keep feeding the stale height into slope/step/pose
+      // computation, which is exactly the kind of false obstacle that used to
+      // survive until the node was restarted.
+      if (n_points((*it)(0), (*it)(1)) <= 0.0f)
+      {
+        interpolated((*it)(0), (*it)(1)) = 0.0f;
+        elevation_bgk((*it)(0), (*it)(1)) =
+            std::numeric_limits<float>::quiet_NaN();
+        ++invalidated_bgk_cells;
+      }
       incremental_geom((*it)(0), (*it)(1)) = 0.0f;
       incremental_step((*it)(0), (*it)(1)) = 0.0f;
       incremental_trav((*it)(0), (*it)(1)) = 0.0f;
@@ -2779,13 +2983,53 @@ void Mapping::height_mapping(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud)
     }
   }
 
+  // Height changes smaller than the threshold and an earlier failed pose
+  // decision must not remain cached forever.  Refresh the immediate vehicle
+  // footprint every frame, and the complete configured local region at a
+  // bounded interval.  This preserves incremental performance while giving
+  // every derived layer a deterministic recovery path without a restart.
+  const auto invalidateRegion = [&](double radius)
+  {
+    if (radius <= 0.0)
+    {
+      return;
+    }
+
+    for (grid_map::CircleIterator it(
+             height_map_,
+             grid_map::Position(current_pos.x(), current_pos.y()),
+             radius);
+         !it.isPastEnd(); ++it)
+    {
+      if (n_points((*it)(0), (*it)(1)) <= 0.0f)
+      {
+        interpolated((*it)(0), (*it)(1)) = 0.0f;
+      }
+      incremental_geom((*it)(0), (*it)(1)) = 0.0f;
+      incremental_step((*it)(0), (*it)(1)) = 0.0f;
+      incremental_trav((*it)(0), (*it)(1)) = 0.0f;
+      incremental_fine((*it)(0), (*it)(1)) = 0.0f;
+      ++invalidated_cells;
+    }
+  };
+
+  invalidateRegion(near_robot_refresh_radius);
+  if (mapping_cycle %
+          static_cast<std::uint64_t>(incremental_refresh_interval_frames) ==
+      0)
+  {
+    invalidateRegion(periodic_refresh_radius);
+  }
+
   // 输出统计信息：映射到地图内的点更新次数、以及 BGK 被覆盖的格子数
   // 注意：cell_count 实际上是“点数”，不是 unique cell 数
-  ROS_INFO("Height mapping: processed %d points, new=%zu, changed=%zu, "
-           "updated_BGK=%d, invalidated=%zu",
-           cell_count, newly_observed_cells.size(),
+  ROS_INFO("Height mapping: processed=%d, frame_cells=%zu, histories=%zu, "
+           "new=%zu, changed=%zu, updated_BGK=%d, invalidated=%zu, "
+           "invalidated_BGK=%zu",
+           cell_count, frame_cells.size(), height_histories.size(),
+           newly_observed_cells.size(),
            changed_height_cells.size(), bgk_updated_cells,
-           invalidated_cells);
+           invalidated_cells, invalidated_bgk_cells);
 }
 
 void Mapping::updateHeightStats(float &height, float &variance, float n, float new_height)
@@ -2958,9 +3202,15 @@ void Mapping::bgk_mapping()
     // 若权重和为正，且预测值不是 NaN，则写入：
     //   elevation_BGK = y_pred / sum(K)
     // 并将 interpolated 标记为 1（表示该格已插值过）
-    if (k_sum(0, 0) > 0 && !std::isnan(y_pred(0, 0)))
+    if (std::isfinite(k_sum(0, 0)) && k_sum(0, 0) > 0.0f &&
+        std::isfinite(y_pred(0, 0)))
     {
-      elevation_bgk(index(0), index(1)) = y_pred(0, 0) / k_sum(0, 0);
+      const float predicted_height = y_pred(0, 0) / k_sum(0, 0);
+      if (!std::isfinite(predicted_height))
+      {
+        continue;
+      }
+      elevation_bgk(index(0), index(1)) = predicted_height;
       interpolated(index(0), index(1)) = 1.0f;
       interpolated_cells++;
     }
@@ -3078,6 +3328,18 @@ void Mapping::geometric_mapping()
 
 bool Mapping::areaSingleNormalComputation(const grid_map::Index &index)
 {
+  // This cell may be revisited after temporal/BGK invalidation.  Clear all
+  // previous derived values before attempting the new fit; otherwise a fit
+  // failure silently leaves an old slope or roughness obstacle active.
+  const float invalid = std::numeric_limits<float>::quiet_NaN();
+  height_map_.at("normal_x", index) = invalid;
+  height_map_.at("normal_y", index) = invalid;
+  height_map_.at("normal_z", index) = invalid;
+  height_map_.at("slope", index) = invalid;
+  height_map_.at("roughness", index) = invalid;
+  height_map_.at("slope_deg", index) = invalid;
+  height_map_.at("roughness_raw", index) = invalid;
+
   // =====================================================
   // [0] 将当前 cell 的栅格索引 index 转换成连续坐标 center=(x,y)
   // =====================================================
@@ -3509,6 +3771,11 @@ void Mapping::traversability_mapping()
     float slope_val = slope(idx(0), idx(1));
     float step_val = step(idx(0), idx(1));
     float roughness_val = roughness(idx(0), idx(1));
+
+    // Never retain the previous traversability when one of the refreshed
+    // source features is unavailable this cycle.
+    traversability(idx(0), idx(1)) =
+        std::numeric_limits<float>::quiet_NaN();
 
     // -------------------------------------------------
     // [3.3] 有效性检查：有任何 NaN 则跳过
