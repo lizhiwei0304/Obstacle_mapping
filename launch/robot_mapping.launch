@@ -1,5 +1,5 @@
 <?xml version="1.0"?>
-<!-- Complete launch configuration with package-local traversability CSV output. -->
+<!-- Complete launch configuration with planner-compatible runtime CSV output. -->
 <launch>
     <arg name="ns" default="vehicle0" />
 
@@ -16,7 +16,7 @@
     <arg name="queue_size" default="10" />
     <arg name="debug_mode" default="false" />
     <arg name="enable_runtime_csv" default="true" />
-    <arg name="runtime_csv_output_dir" default="$(find obstacle_mapping)/runtime" />
+    <arg name="runtime_csv_output_dir" default="/home/mrobots/mtare" />
     <arg name="max_range" default="25.0" />
     <arg name="min_range" default="0.1" />
     <arg name="min_z" default="-3.0" />
@@ -51,7 +51,7 @@
     <arg name="robot_model_resolution" default="0.2" />
     <arg name="touch_gap_threshold" default="0.05" />
     <arg name="collision_gap_threshold" default="0.1" />
-    <arg name="max_iterations" default="50" />
+    <arg name="max_iterations" default="20" />
     <arg name="fine_min_support_points" default="3" />
     <arg name="fine_max_rotation_step_deg" default="5.0" />
     <arg name="fine_max_pose_tilt_deg" default="60.0" />
@@ -110,13 +110,13 @@
     <arg name="enable_incremental_trav" default="true" />
 
     <!-- Only medium/high-risk uncertain cells enter expensive pose/collision checking. -->
-    <arg name="fine_trav_min" default="0.55" />
+    <arg name="fine_trav_min" default="0.65" />
     <arg name="fine_trav_max" default="0.9" />
-    <arg name="fine_slope_min" default="0.50" />
+    <arg name="fine_slope_min" default="0.60" />
     <arg name="fine_slope_max" default="0.95" />
-    <arg name="fine_roughness_min" default="0.40" />
+    <arg name="fine_roughness_min" default="0.50" />
     <arg name="fine_roughness_max" default="1.0" />
-    <arg name="fine_step_min" default="0.40" />
+    <arg name="fine_step_min" default="0.50" />
     <arg name="fine_step_max" default="1.0" />
     <arg name="fine_roll_threshold_deg" default="30.0" />
     <arg name="fine_pitch_threshold_deg" default="30.0" />
@@ -126,6 +126,8 @@
     <arg name="fine_debug_csv_path" default="$(find obstacle_mapping)/$(arg ns)_fine_traversability_debug.csv" />
     <arg name="fine_debug_csv_append" default="false" />
     <arg name="fine_debug_csv_max_cycles" default="50" />
+    <arg name="enable_fine_iteration_csv" default="true" />
+    <arg name="fine_iteration_csv_path" default="$(arg runtime_csv_output_dir)/fine_pose_iterations_$(arg ns).csv" />
 
     <arg name="skip_old_messages" default="true" />
 
@@ -279,6 +281,8 @@
         <param name="fine_debug_csv_path" value="$(arg fine_debug_csv_path)" />
         <param name="fine_debug_csv_append" value="$(arg fine_debug_csv_append)" />
         <param name="fine_debug_csv_max_cycles" value="$(arg fine_debug_csv_max_cycles)" />
+        <param name="enable_fine_iteration_csv" value="$(arg enable_fine_iteration_csv)" />
+        <param name="fine_iteration_csv_path" value="$(arg fine_iteration_csv_path)" />
 
         <!-- Asynchronous processing parameters -->
         <param name="skip_old_messages" value="$(arg skip_old_messages)" />

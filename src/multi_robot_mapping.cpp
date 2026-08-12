@@ -94,7 +94,7 @@ namespace
 
   // predictRobotPose() 会对同一格子按“车型 x 航向”连续调用。
   // 以精细化周期编号作为缓存世代，保证同一周期内复用地形
-  // 子图，下一周期地图更新后不会沿用过期缓存。
+  // 窗口拟合结果，下一周期地图更新后不会沿用过期缓存。
   thread_local std::size_t fine_cycle_generation = 0;
 
   struct HeightFrameSample
@@ -1357,6 +1357,10 @@ Mapping::RuntimeCycleMetrics::RuntimeCycleMetrics()
       step_mapping_ms(0.0),
       traversability_mapping_ms(0.0),
       fine_traversability_mapping_ms(0.0),
+      fine_pose_call_count(0),
+      fine_pose_iteration_total(0),
+      fine_pose_iteration_max(0),
+      fine_pose_iteration_limit_count(0),
       viewpoint_update_ms(0.0),
       map_publication_ms(0.0)
 {
@@ -1419,16 +1423,16 @@ Mapping::Mapping(ros::NodeHandle &nh, ros::NodeHandle &pnh)
       collision_gap_threshold_(0.1),
       wheeled_model_loaded_(false),
       tracked_model_loaded_(false),
-      max_iterations_(50),
+      max_iterations_(20),
       enable_fine_traversability_(true),
       enable_incremental_geom_(true),
       enable_incremental_step_(true),
       enable_incremental_trav_(true),
-      fine_trav_min_(0.55),
+      fine_trav_min_(0.65),
       fine_trav_max_(0.9),
-      fine_slope_min_(0.50),
+      fine_slope_min_(0.60),
       fine_slope_max_(0.8),
-      fine_roughness_min_(0.40),
+      fine_roughness_min_(0.50),
       fine_roughness_max_(1.0),
       fine_roll_threshold_deg_(30.0),
       fine_pitch_threshold_deg_(30.0),
@@ -1675,7 +1679,7 @@ void Mapping::loadParameters()
   pnh_.param<std::string>("tracked_model_path", tracked_model_path_, default_tracked_model_path);
   pnh_.param<bool>("enable_runtime_csv", enable_runtime_csv_, true);
   pnh_.param<std::string>("runtime_csv_output_dir", runtime_csv_output_dir_,
-                          package_path + "/runtime");
+                          "/home/mrobots/mtare");
 
   // Load sensor range parameters
   pnh_.param<double>("max_range", max_range_, 100.0);
@@ -1713,17 +1717,17 @@ void Mapping::loadParameters()
   pnh_.param<double>("robot_model_resolution", robot_model_resolution_, 0.2);
   pnh_.param<double>("touch_gap_threshold", touch_gap_threshold_, 0.05);
   pnh_.param<double>("collision_gap_threshold", collision_gap_threshold_, 0.1);
-  pnh_.param<int>("max_iterations", max_iterations_, 50);
+  pnh_.param<int>("max_iterations", max_iterations_, 20);
   pnh_.param<bool>("enable_fine_traversability", enable_fine_traversability_, false);
 
   // Load fine-grained traversability range parameters
   // 精细化校核只用于中高风险不确定区。提高下限可避免
   // 在明显平坦区域反复执行昂贵的整车碰撞/支撑姿态求解。
-  pnh_.param<double>("fine_trav_min", fine_trav_min_, 0.55);
+  pnh_.param<double>("fine_trav_min", fine_trav_min_, 0.65);
   pnh_.param<double>("fine_trav_max", fine_trav_max_, 0.9);
-  pnh_.param<double>("fine_slope_min", fine_slope_min_, 0.50);
+  pnh_.param<double>("fine_slope_min", fine_slope_min_, 0.60);
   pnh_.param<double>("fine_slope_max", fine_slope_max_, 0.8);
-  pnh_.param<double>("fine_roughness_min", fine_roughness_min_, 0.40);
+  pnh_.param<double>("fine_roughness_min", fine_roughness_min_, 0.50);
   pnh_.param<double>("fine_roughness_max", fine_roughness_max_, 1.0);
   pnh_.param<double>("fine_roll_threshold_deg", fine_roll_threshold_deg_, 30.0);
   pnh_.param<double>("fine_pitch_threshold_deg", fine_pitch_threshold_deg_, 30.0);
@@ -1822,7 +1826,7 @@ void Mapping::initializeRuntimeCSV()
 
   if (runtime_csv_output_dir_.empty())
   {
-    runtime_csv_output_dir_ = ros::package::getPath("obstacle_mapping") + "/runtime";
+    runtime_csv_output_dir_ = "/home/mrobots/mtare";
   }
 
   boost::system::error_code directory_error;
@@ -1854,6 +1858,8 @@ void Mapping::initializeRuntimeCSV()
       << "height_mapping_ms,bgk_mapping_ms,startup_hole_fill_ms,"
       << "geometric_mapping_ms,step_mapping_ms,traversability_mapping_ms,"
       << "fine_traversability_mapping_ms,viewpoint_update_ms,map_publication_ms,"
+      << "fine_pose_call_count,fine_pose_iteration_total,fine_pose_iteration_mean,"
+      << "fine_pose_iteration_max,fine_pose_iteration_limit_count,"
       << "algorithm_total_ms,accounted_total_ms,cycle_wall_ms,unaccounted_ms,"
       << "end_to_end_ms\n";
   runtime_csv_file_.flush();
@@ -1882,6 +1888,11 @@ void Mapping::writeRuntimeCycleToCSV(const ros::Time &source_stamp,
   const double unaccounted_ms = cycle_wall_ms - accounted_total_ms;
   const double end_to_end_ms =
       metrics.ros_to_pcl_ms + metrics.queue_wait_ms + cycle_wall_ms;
+  const double fine_pose_iteration_mean =
+      metrics.fine_pose_call_count == 0
+          ? 0.0
+          : static_cast<double>(metrics.fine_pose_iteration_total) /
+                static_cast<double>(metrics.fine_pose_call_count);
 
   runtime_csv_file_ << std::fixed << std::setprecision(6)
                     << runtime_cycle_index_++ << ','
@@ -1907,6 +1918,11 @@ void Mapping::writeRuntimeCycleToCSV(const ros::Time &source_stamp,
                     << metrics.fine_traversability_mapping_ms << ','
                     << metrics.viewpoint_update_ms << ','
                     << metrics.map_publication_ms << ','
+                    << metrics.fine_pose_call_count << ','
+                    << metrics.fine_pose_iteration_total << ','
+                    << fine_pose_iteration_mean << ','
+                    << metrics.fine_pose_iteration_max << ','
+                    << metrics.fine_pose_iteration_limit_count << ','
                     << algorithm_total_ms << ','
                     << accounted_total_ms << ','
                     << cycle_wall_ms << ','
@@ -4121,7 +4137,7 @@ void Mapping::finegrained_traversability_mapping()
   static double severity_step_weight = 0.40;
 
   // 这些范围作用于“按车型能力阈值归一化后的特征”。
-  static double fine_step_min = 0.40;
+  static double fine_step_min = 0.50;
   static double fine_step_max = 1.00;
 
   auto clamp01 = [](double value)
@@ -4260,7 +4276,7 @@ void Mapping::finegrained_traversability_mapping()
                        severity_roughness_weight, 0.25);
     pnh_.param<double>("severity_step_weight",
                        severity_step_weight, 0.40);
-    pnh_.param<double>("fine_step_min", fine_step_min, 0.40);
+    pnh_.param<double>("fine_step_min", fine_step_min, 0.50);
     pnh_.param<double>("fine_step_max", fine_step_max, 1.00);
 
     normalizeThreeWeights(pose_angle_weight,
@@ -4316,6 +4332,7 @@ void Mapping::finegrained_traversability_mapping()
     grid_map::Matrix *fine_layer = nullptr;
     const VehicleCapability *capability = nullptr;
     std::string name;
+    std::vector<PrecomputedVehicleModel> heading_models;
     int nominal_contact_points = 1;
     int count_success = 0;
     int count_collision = 0;
@@ -4569,6 +4586,104 @@ void Mapping::finegrained_traversability_mapping()
         Eigen::AngleAxisd(heading, z_axis).toRotationMatrix();
   }
 
+  // Rotate the fixed vehicle models once per heading and reuse the results for
+  // every candidate cell. The support/body mask is independent of terrain.
+  for (auto &vehicle : vehicles)
+  {
+    vehicle.heading_models.resize(
+        static_cast<std::size_t>(fine_heading_samples));
+    for (int heading_index = 0;
+         heading_index < fine_heading_samples; ++heading_index)
+    {
+      PrecomputedVehicleModel &precomputed =
+          vehicle.heading_models[static_cast<std::size_t>(heading_index)];
+      const Eigen::Matrix3d &heading_rotation =
+          fine_heading_rotations[static_cast<std::size_t>(heading_index)];
+      precomputed.heading_rotation = heading_rotation;
+      const std::size_t model_point_count =
+          static_cast<std::size_t>(robot_rows_ * robot_cols_);
+      precomputed.points.reserve(model_point_count);
+      precomputed.support_xy.reserve(model_point_count);
+      precomputed.collision_sensitive.reserve(model_point_count);
+
+      for (int i = 0; i < robot_rows_; ++i)
+      {
+        for (int j = 0; j < robot_cols_; ++j)
+        {
+          const Eigen::Vector3d rotated_point =
+              heading_rotation *
+              Eigen::Vector3d(vehicle.model->X_(i, j),
+                              vehicle.model->Y_(i, j),
+                              vehicle.model->Z_(i, j));
+          precomputed.points.emplace_back(rotated_point.x(),
+                                          rotated_point.y(),
+                                          rotated_point.z(), 1.0);
+          precomputed.support_xy.emplace_back(rotated_point.x(),
+                                              rotated_point.y());
+          precomputed.collision_sensitive.push_back(
+              checkWheel(vehicle.id, i, j) ? 1U : 0U);
+        }
+      }
+    }
+  }
+
+  // Detailed convergence data is buffered and flushed once per mapping cycle.
+  static bool iteration_csv_configured = false;
+  static bool iteration_csv_enabled = true;
+  static std::string iteration_csv_path;
+  static std::ofstream iteration_csv_stream;
+  if (!iteration_csv_configured)
+  {
+    pnh_.param<bool>("enable_fine_iteration_csv",
+                     iteration_csv_enabled, true);
+    const std::string default_iteration_csv_path =
+        runtime_csv_output_dir_ + "/fine_pose_iterations_" +
+        RuntimeFileSuffix(ros::this_node::getNamespace()) + ".csv";
+    pnh_.param<std::string>("fine_iteration_csv_path",
+                            iteration_csv_path,
+                            default_iteration_csv_path);
+    if (iteration_csv_enabled)
+    {
+      const boost::filesystem::path output_path(iteration_csv_path);
+      const boost::filesystem::path output_directory =
+          output_path.parent_path();
+      boost::system::error_code directory_error;
+      if (!output_directory.empty())
+      {
+        boost::filesystem::create_directories(output_directory,
+                                               directory_error);
+      }
+
+      if (directory_error)
+      {
+        ROS_ERROR("[FineIterationCSV] Failed to create directory %s: %s",
+                  output_directory.string().c_str(),
+                  directory_error.message().c_str());
+        iteration_csv_enabled = false;
+      }
+      else
+      {
+        iteration_csv_stream.open(iteration_csv_path,
+                                  std::ios::out | std::ios::trunc);
+      }
+      if (iteration_csv_stream.is_open())
+      {
+        iteration_csv_stream
+            << "cycle,ros_time_s,cell_x,cell_y,vehicle_id,vehicle,heading_deg,"
+            << "pose_status,iterations,exit_reason,reached_iteration_limit\n";
+        ROS_INFO("[FineIterationCSV] Writing pose convergence to %s",
+                 iteration_csv_path.c_str());
+      }
+      else if (iteration_csv_enabled)
+      {
+        ROS_ERROR("[FineIterationCSV] Failed to open: %s",
+                  iteration_csv_path.c_str());
+        iteration_csv_enabled = false;
+      }
+    }
+    iteration_csv_configured = true;
+  }
+
   int count_skipped = 0;
   int count_cached = 0;
 
@@ -4794,16 +4909,39 @@ void Mapping::finegrained_traversability_mapping()
         const double heading =
             fine_headings[static_cast<std::size_t>(heading_index)];
         const double heading_deg = heading * 180.0 / M_PI;
-        const Eigen::Matrix3d &heading_rotation =
-            fine_heading_rotations[static_cast<std::size_t>(heading_index)];
-
         double roll = 0.0;
         double pitch = 0.0;
         int contact_points = 0;
         int is_stable = 0;
+        int iterations_used = 0;
+        std::string pose_exit_reason;
         const int pose_status = predictRobotPose(
             idx, roll, pitch, contact_points, is_stable,
-            heading_rotation, *vehicle.model, vehicle.id);
+            vehicle.heading_models[static_cast<std::size_t>(heading_index)],
+            vehicle.id, iterations_used, pose_exit_reason);
+
+        ++current_runtime_metrics_.fine_pose_call_count;
+        current_runtime_metrics_.fine_pose_iteration_total +=
+            static_cast<std::uint64_t>(std::max(0, iterations_used));
+        current_runtime_metrics_.fine_pose_iteration_max =
+            std::max(current_runtime_metrics_.fine_pose_iteration_max,
+                     iterations_used);
+        const bool reached_iteration_limit =
+            pose_exit_reason == "iteration_limit";
+        if (reached_iteration_limit)
+        {
+          ++current_runtime_metrics_.fine_pose_iteration_limit_count;
+        }
+
+        if (iteration_csv_enabled && iteration_csv_stream.is_open())
+        {
+          iteration_csv_stream << csv_cycle << ',' << csv_stamp << ','
+                               << position.x() << ',' << position.y() << ','
+                               << vehicle.id << ',' << vehicle.name << ','
+                               << heading_deg << ',' << pose_status << ','
+                               << iterations_used << ',' << pose_exit_reason << ','
+                               << (reached_iteration_limit ? 1 : 0) << '\n';
+        }
 
         if (pose_status == kPoseSuccess && is_stable != 0 &&
             std::isfinite(roll) && std::isfinite(pitch))
@@ -5225,6 +5363,10 @@ void Mapping::finegrained_traversability_mapping()
                csv_max_cycles, csv_path.c_str());
     }
   }
+  if (iteration_csv_enabled && iteration_csv_stream.is_open())
+  {
+    iteration_csv_stream.flush();
+  }
 }
 
 // ==================== Robot Pose Prediction ====================
@@ -5233,14 +5375,25 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
                               double &pitch,
                               int &contact_points,
                               int &stable,
-                              const Eigen::Matrix3d &yaw_rotation,
-                              const HeightGrid &vehicle_model,
-                              int vehicle_type)
+                              const PrecomputedVehicleModel &vehicle_model,
+                              int vehicle_type,
+                              int &iterations_used,
+                              std::string &exit_reason)
 {
   roll = 0.0;
   pitch = 0.0;
   contact_points = 0;
   stable = 0;
+  iterations_used = 0;
+  exit_reason = "precheck_failure";
+  if (vehicle_model.points.empty() ||
+      vehicle_model.points.size() != vehicle_model.support_xy.size() ||
+      vehicle_model.points.size() != vehicle_model.collision_sensitive.size() ||
+      !vehicle_model.heading_rotation.allFinite())
+  {
+    exit_reason = "invalid_precomputed_vehicle_model";
+    return kPoseFailure;
+  }
 
   static bool pose_limits_configured = false;
   static int fine_min_support_points = 3;
@@ -5318,6 +5471,7 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
   const double submap_side =
       std::sqrt(vehicle_width * vehicle_width +
                 vehicle_length * vehicle_length);
+  const double half_submap_side = 0.5 * submap_side;
 
   struct TerrainPatchCache
   {
@@ -5325,7 +5479,6 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
     std::size_t generation = 0;
     grid_map::Index center_idx;
     grid_map::Position center_pos;
-    grid_map::GridMap submap;
     Eigen::Vector3d terrain_normal = Eigen::Vector3d::UnitZ();
     bool valid = false;
   };
@@ -5349,31 +5502,33 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
     if (!height_map_.getPosition(center_idx,
                                  terrain_cache.center_pos))
     {
+      exit_reason = "invalid_center_index";
       return kPoseFailure;
     }
 
-    bool submap_ok = false;
-    terrain_cache.submap = height_map_.getSubmap(
-        terrain_cache.center_pos,
+    bool terrain_window_ok = false;
+    const grid_map::SubmapGeometry terrain_window(
+        height_map_, terrain_cache.center_pos,
         grid_map::Length(submap_side, submap_side),
-        submap_ok);
-
-    if (!submap_ok)
+        terrain_window_ok);
+    if (!terrain_window_ok)
     {
+      exit_reason = "invalid_terrain_window";
       return kPoseFailure;
     }
 
-    // 该子图与初始地形平面只与中心格子有关，与车型和
-    // 航向无关，因此在 2 种车型 x 4 个航向之间共享。
+    // Iterate directly over the original map geometry. This avoids copying all
+    // 28 GridMap layers for every candidate cell. The fitted terrain normal is
+    // cached and shared by both vehicles and all four headings for this cell.
     std::vector<Eigen::Vector3d> terrain_points;
     terrain_points.reserve(64);
 
-    for (grid_map::GridMapIterator it(terrain_cache.submap);
+    for (grid_map::SubmapIterator it(terrain_window);
          !it.isPastEnd(); ++it)
     {
       const grid_map::Index idx = *it;
       const float z =
-          terrain_cache.submap.at("elevation_BGK", idx);
+          height_map_.at("elevation_BGK", idx);
 
       if (!std::isfinite(z))
       {
@@ -5381,7 +5536,7 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
       }
 
       grid_map::Position pos;
-      if (terrain_cache.submap.getPosition(idx, pos))
+      if (height_map_.getPosition(idx, pos))
       {
         terrain_points.emplace_back(
             pos.x(), pos.y(), static_cast<double>(z));
@@ -5390,6 +5545,7 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
 
     if (terrain_points.size() < 4)
     {
+      exit_reason = "insufficient_terrain_points";
       return kPoseFailure;
     }
 
@@ -5397,6 +5553,7 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
     if (!terrain_cache.terrain_normal.allFinite() ||
         terrain_cache.terrain_normal.norm() < 1e-6)
     {
+      exit_reason = "invalid_terrain_normal";
       return kPoseFailure;
     }
 
@@ -5412,7 +5569,6 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
 
   const grid_map::Position &center_pos =
       terrain_cache.center_pos;
-  const grid_map::GridMap &submap = terrain_cache.submap;
   const Eigen::Vector3d &terrain_normal =
       terrain_cache.terrain_normal;
 
@@ -5448,7 +5604,7 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
       Eigen::Matrix4d::Identity();
 
   T_matrix.block<3, 3>(0, 0) =
-      terrain_rotation * yaw_rotation;
+      terrain_rotation;
 
   T_matrix.block<3, 1>(0, 3) =
       Eigen::Vector3d(
@@ -5459,8 +5615,11 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
   auto updateRollPitchFromT =
       [&](const Eigen::Matrix4d &T)
   {
+    // T maps the heading-pre-rotated model into the world. Restore the
+    // heading rotation here so roll/pitch remain identical to the original
+    // un-precomputed implementation.
     const Eigen::Matrix3d R =
-        T.block<3, 3>(0, 0);
+        T.block<3, 3>(0, 0) * vehicle_model.heading_rotation;
 
     roll =
         std::atan2(R(2, 1), R(2, 2)) *
@@ -5485,7 +5644,9 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
     }
 
     const Eigen::Vector3d body_up =
-        T.block<3, 3>(0, 0).col(2);
+        (T.block<3, 3>(0, 0) *
+         vehicle_model.heading_rotation)
+            .col(2);
 
     if (!body_up.allFinite() ||
         body_up.norm() < 1e-6)
@@ -5627,11 +5788,9 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
        iteration < max_iterations_;
        ++iteration)
   {
-    Eigen::MatrixXd gap_map(
-        robot_rows_,
-        robot_cols_);
-
-    gap_map.setConstant(
+    iterations_used = iteration + 1;
+    std::vector<double> gap_map(
+        vehicle_model.points.size(),
         std::numeric_limits<double>::quiet_NaN());
 
     double min_gap =
@@ -5640,55 +5799,51 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
     // ---------------------------------------------------
     // 3.1 计算当前车辆模型所有点到地形的间隙
     // ---------------------------------------------------
-    for (int i = 0;
-         i < robot_rows_;
-         ++i)
+    for (std::size_t point_index = 0;
+         point_index < vehicle_model.points.size();
+         ++point_index)
     {
-      for (int j = 0;
-           j < robot_cols_;
-           ++j)
+      const Eigen::Vector4d world_point =
+          T_matrix * vehicle_model.points[point_index];
+
+      if (std::fabs(world_point.x() - center_pos.x()) > half_submap_side ||
+          std::fabs(world_point.y() - center_pos.y()) > half_submap_side)
       {
-        const Eigen::Vector4d model_point(
-            vehicle_model.X_(i, j),
-            vehicle_model.Y_(i, j),
-            vehicle_model.Z_(i, j),
-            1.0);
-
-        const Eigen::Vector4d world_point =
-            T_matrix * model_point;
-
-        grid_map::Index terrain_idx;
-
-        if (!submap.getIndex(
-                grid_map::Position(
-                    world_point.x(),
-                    world_point.y()),
-                terrain_idx))
-        {
-          continue;
-        }
-
-        const float terrain_z =
-            submap.at(
-                "elevation_BGK",
-                terrain_idx);
-
-        if (!std::isfinite(terrain_z))
-        {
-          continue;
-        }
-
-        const double gap =
-            world_point.z() -
-            static_cast<double>(terrain_z);
-
-        gap_map(i, j) = gap;
-        min_gap = std::min(min_gap, gap);
+        continue;
       }
+
+      grid_map::Index terrain_idx;
+
+      if (!height_map_.getIndex(
+              grid_map::Position(
+                  world_point.x(),
+                  world_point.y()),
+              terrain_idx))
+      {
+        continue;
+      }
+
+      const float terrain_z =
+          height_map_.at(
+              "elevation_BGK",
+              terrain_idx);
+
+      if (!std::isfinite(terrain_z))
+      {
+        continue;
+      }
+
+      const double gap =
+          world_point.z() -
+          static_cast<double>(terrain_z);
+
+      gap_map[point_index] = gap;
+      min_gap = std::min(min_gap, gap);
     }
 
     if (!std::isfinite(min_gap))
     {
+      exit_reason = "no_terrain_below_model";
       return kPoseFailure;
     }
 
@@ -5707,76 +5862,52 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
     contact_points = 0;
     bool collision = false;
 
-    for (int i = 0;
-         i < robot_rows_;
-         ++i)
+    support_points_world.reserve(vehicle_model.points.size());
+    support_points_model.reserve(vehicle_model.points.size());
+    for (std::size_t point_index = 0;
+         point_index < vehicle_model.points.size();
+         ++point_index)
     {
-      for (int j = 0;
-           j < robot_cols_;
-           ++j)
+      const Eigen::Vector4d world_point =
+          T_matrix * vehicle_model.points[point_index];
+
+      // This iteration only translated the model vertically. XY and the
+      // corresponding terrain cell did not change, so reuse the first-pass
+      // gap instead of querying elevation_BGK for every point a second time.
+      if (!std::isfinite(gap_map[point_index]))
       {
-        const Eigen::Vector4d model_point(
-            vehicle_model.X_(i, j),
-            vehicle_model.Y_(i, j),
-            vehicle_model.Z_(i, j),
-            1.0);
+        continue;
+      }
 
-        const Eigen::Vector4d world_point =
-            T_matrix * model_point;
+      const double gap =
+          gap_map[point_index] - min_gap;
 
-        grid_map::Index terrain_idx;
+      gap_map[point_index] = gap;
 
-        if (!submap.getIndex(
-                grid_map::Position(
-                    world_point.x(),
-                    world_point.y()),
-                terrain_idx))
-        {
-          continue;
-        }
+      // false：车轮或履带点
+      // true ：底盘碰撞敏感点
+      const bool collision_sensitive =
+          vehicle_model.collision_sensitive[point_index] != 0U;
 
-        const float terrain_z =
-            submap.at(
-                "elevation_BGK",
-                terrain_idx);
+      if (!collision_sensitive &&
+          gap <= pose_touch_gap_threshold)
+      {
+        ++contact_points;
 
-        if (!std::isfinite(terrain_z))
-        {
-          continue;
-        }
+        // 必须使用模型点的实际世界位置作为支撑轴点。
+        support_points_world.emplace_back(
+            world_point.x(),
+            world_point.y(),
+            world_point.z());
 
-        const double gap =
-            world_point.z() -
-            static_cast<double>(terrain_z);
+        support_points_model.emplace_back(
+            vehicle_model.support_xy[point_index]);
+      }
 
-        gap_map(i, j) = gap;
-
-        // false：车轮或履带点
-        // true ：底盘碰撞敏感点
-        const bool collision_sensitive =
-            checkWheel(vehicle_type, i, j);
-
-        if (!collision_sensitive &&
-            gap <= pose_touch_gap_threshold)
-        {
-          ++contact_points;
-
-          // 必须使用模型点的实际世界位置作为支撑轴点。
-          support_points_world.emplace_back(
-              world_point.x(),
-              world_point.y(),
-              world_point.z());
-
-          support_points_model.emplace_back(
-              vehicle_model.X_(i, j),
-              vehicle_model.Y_(i, j));
-        }
-
-        if (collision_sensitive &&
-            gap < pose_collision_clearance)
-        {
-          collision = true;
-        }
+      if (collision_sensitive &&
+          gap < pose_collision_clearance)
+      {
+        collision = true;
       }
     }
 
@@ -5784,11 +5915,13 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
     {
       stable = 0;
       updateRollPitchFromT(T_matrix);
+      exit_reason = "chassis_collision";
       return kPoseCollision;
     }
 
     if (support_points_world.empty())
     {
+      exit_reason = "no_support_contact";
       return kPoseFailure;
     }
 
@@ -5801,6 +5934,7 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
 
     if (hull_model.empty())
     {
+      exit_reason = "empty_support_hull";
       return kPoseFailure;
     }
 
@@ -5829,6 +5963,7 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
 
       if (!found)
       {
+        exit_reason = "support_hull_mapping_failure";
         return kPoseFailure;
       }
     }
@@ -5889,6 +6024,7 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
             contact_to_center.norm() < 1e-6)
         {
           stable = 0;
+          exit_reason = "degenerate_point_support";
           return kPoseUnstable;
         }
 
@@ -5899,6 +6035,7 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
             point_axis.norm() < 1e-6)
         {
           stable = 0;
+          exit_reason = "invalid_point_support_axis";
           return kPoseUnstable;
         }
 
@@ -5947,6 +6084,7 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
 
         if (max_distance_squared < 1e-12)
         {
+          exit_reason = "degenerate_line_support";
           return kPoseFailure;
         }
 
@@ -5964,6 +6102,7 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
       if (!support_normal.allFinite() ||
           support_normal.norm() < 1e-6)
       {
+        exit_reason = "invalid_support_plane";
         return kPoseFailure;
       }
 
@@ -5979,6 +6118,7 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
           1e-6)
       {
         stable = 0;
+        exit_reason = "support_plane_parallel_to_gravity";
         return kPoseUnstable;
       }
 
@@ -6002,6 +6142,7 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
 
       if (!gravity_projection_world.allFinite())
       {
+        exit_reason = "invalid_gravity_projection";
         return kPoseFailure;
       }
 
@@ -6019,6 +6160,7 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
 
       if (!projection_model_h.allFinite())
       {
+        exit_reason = "invalid_model_projection";
         return kPoseFailure;
       }
 
@@ -6037,10 +6179,12 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
         if (exceedsTiltLimit(T_matrix))
         {
           stable = 0;
+          exit_reason = "tilt_limit";
           return kPoseUnstable;
         }
 
         stable = 1;
+        exit_reason = "stable_support";
         return kPoseSuccess;
       }
 
@@ -6116,6 +6260,7 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
 
     if (!has_rotation_axis)
     {
+      exit_reason = "no_rotation_axis";
       return kPoseFailure;
     }
 
@@ -6129,6 +6274,7 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
     if (!axis.allFinite() ||
         axis.norm() < 1e-6)
     {
+      exit_reason = "invalid_rotation_axis";
       return kPoseFailure;
     }
 
@@ -6149,6 +6295,7 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
     {
       stable = 0;
       updateRollPitchFromT(T_matrix);
+      exit_reason = "zero_gravity_moment";
       return kPoseUnstable;
     }
 
@@ -6163,80 +6310,70 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
     double rotation_step =
         std::numeric_limits<double>::infinity();
 
-    for (int i = 0;
-         i < robot_rows_;
-         ++i)
+    for (std::size_t point_index = 0;
+         point_index < vehicle_model.points.size();
+         ++point_index)
     {
-      for (int j = 0;
-           j < robot_cols_;
-           ++j)
+      // A non-zero mask denotes a chassis point, which cannot become a
+      // support contact while searching for the next rotation step.
+      if (vehicle_model.collision_sensitive[point_index] != 0U)
       {
-        // checkWheel=true 表示底盘点。
-        // 底盘点不能作为新的支撑接地点。
-        if (checkWheel(vehicle_type, i, j))
-        {
-          continue;
-        }
+        continue;
+      }
 
-        const double gap =
-            gap_map(i, j);
+      const double gap =
+          gap_map[point_index];
 
-        if (!std::isfinite(gap) ||
-            gap <= pose_touch_gap_threshold)
-        {
-          continue;
-        }
+      if (!std::isfinite(gap) ||
+          gap <= pose_touch_gap_threshold)
+      {
+        continue;
+      }
 
-        const Eigen::Vector4d model_point(
-            vehicle_model.X_(i, j),
-            vehicle_model.Y_(i, j),
-            vehicle_model.Z_(i, j),
-            1.0);
+      const Eigen::Vector3d world_point =
+          (T_matrix * vehicle_model.points[point_index])
+              .head<3>();
 
-        const Eigen::Vector3d world_point =
-            (T_matrix * model_point)
-                .head<3>();
+      const Eigen::Vector3d radius =
+          world_point -
+          rotate_point_1;
 
-        const Eigen::Vector3d radius =
-            world_point -
-            rotate_point_1;
+      // 对绕轴旋转：
+      // dP/dtheta = axis × radius
+      //
+      // z方向速度小于0，说明这个点会向地面运动。
+      const double vertical_rate =
+          (rotation_sign *
+           axis_direction.cross(radius))
+              .z();
 
-        // 对绕轴旋转：
-        // dP/dtheta = axis × radius
-        //
-        // z方向速度小于0，说明这个点会向地面运动。
-        const double vertical_rate =
-            (rotation_sign *
-             axis_direction.cross(radius))
-                .z();
+      if (!std::isfinite(vertical_rate) ||
+          vertical_rate >= -1e-8)
+      {
+        continue;
+      }
 
-        if (!std::isfinite(vertical_rate) ||
-            vertical_rate >= -1e-8)
-        {
-          continue;
-        }
+      const double remaining_gap =
+          gap -
+          pose_touch_gap_threshold;
 
-        const double remaining_gap =
-            gap -
-            pose_touch_gap_threshold;
+      const double candidate_step =
+          remaining_gap /
+          (-vertical_rate);
 
-        const double candidate_step =
-            remaining_gap /
-            (-vertical_rate);
-
-        if (std::isfinite(candidate_step) &&
-            candidate_step > 1e-8)
-        {
-          rotation_step =
-              std::min(
-                  rotation_step,
-                  candidate_step);
-        }
+      if (std::isfinite(candidate_step) &&
+          candidate_step > 1e-8)
+      {
+        rotation_step =
+            std::min(
+                rotation_step,
+                candidate_step);
       }
     }
 
     if (!std::isfinite(rotation_step))
     {
+      exit_reason = "no_next_contact";
       return kPoseFailure;
     }
 
@@ -6251,6 +6388,7 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
 
     if (rotation_step < 1e-8)
     {
+      exit_reason = "rotation_step_too_small";
       return kPoseFailure;
     }
 
@@ -6291,6 +6429,7 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
 
     if (!T_matrix.allFinite())
     {
+      exit_reason = "invalid_pose_transform";
       return kPoseFailure;
     }
 
@@ -6298,6 +6437,7 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
     {
       stable = 0;
       updateRollPitchFromT(T_matrix);
+      exit_reason = "tilt_limit";
       return kPoseUnstable;
     }
   }
@@ -6305,6 +6445,7 @@ int Mapping::predictRobotPose(const grid_map::Index &center_idx,
   // 达到最大迭代次数仍未形成稳定支撑面。
   updateRollPitchFromT(T_matrix);
   stable = 0;
+  exit_reason = "iteration_limit";
   return kPoseFailure;
 }
 

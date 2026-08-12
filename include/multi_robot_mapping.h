@@ -36,6 +36,8 @@
 #include <unordered_set>
 #include <atomic>
 #include <cstdint>
+#include <string>
+#include <vector>
 
 class Mapping
 {
@@ -133,6 +135,10 @@ private:
         double step_mapping_ms;
         double traversability_mapping_ms;
         double fine_traversability_mapping_ms;
+        std::uint64_t fine_pose_call_count;
+        std::uint64_t fine_pose_iteration_total;
+        int fine_pose_iteration_max;
+        std::uint64_t fine_pose_iteration_limit_count;
         double viewpoint_update_ms;
         double map_publication_ms;
 
@@ -204,6 +210,14 @@ private:
         Eigen::MatrixXd Y_;
         Eigen::MatrixXd Z_;
         Eigen::MatrixXd Gap_;
+    };
+
+    struct PrecomputedVehicleModel
+    {
+        Eigen::Matrix3d heading_rotation = Eigen::Matrix3d::Identity();
+        std::vector<Eigen::Vector4d> points;
+        std::vector<Eigen::Vector2d> support_xy;
+        std::vector<unsigned char> collision_sensitive;
     };
 
     std::string wheeled_model_path_;
@@ -360,8 +374,10 @@ private:
      * @return: 0 表示失败，1 表示发生碰撞，2 表示成功且稳定
      */
     int predictRobotPose(const grid_map::Index &index, double &roll, double &pitch,
-                         int &contact_points, int &stable, const Eigen::Matrix3d &yaw_rotation,
-                         const HeightGrid &vehicle_model, int vehicle_type);
+                         int &contact_points, int &stable,
+                         const PrecomputedVehicleModel &vehicle_model,
+                         int vehicle_type, int &iterations_used,
+                         std::string &exit_reason);
 
     /**
      * @brief 判断某个栅格点是否处于可接触区域（例如轮子区域）
