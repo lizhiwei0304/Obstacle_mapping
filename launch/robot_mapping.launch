@@ -15,6 +15,8 @@
     <arg name="frame_id" default="map" />
     <arg name="queue_size" default="10" />
     <arg name="debug_mode" default="false" />
+    <arg name="enable_runtime_csv" default="true" />
+    <arg name="runtime_csv_output_dir" default="$(find obstacle_mapping)/runtime" />
     <arg name="max_range" default="25.0" />
     <arg name="min_range" default="0.1" />
     <arg name="min_z" default="-3.0" />
@@ -147,6 +149,8 @@
 
         <!-- Vehicle and debug settings -->
         <param name="debug_mode" value="$(arg debug_mode)" />
+        <param name="enable_runtime_csv" value="$(arg enable_runtime_csv)" />
+        <param name="runtime_csv_output_dir" value="$(arg runtime_csv_output_dir)" />
 
         <param name="publish_traversability_cloud" value="$(arg publish_traversability_cloud)" />
         <param name="traversability_cloud_topic" value="$(arg traversability_cloud_topic)" />

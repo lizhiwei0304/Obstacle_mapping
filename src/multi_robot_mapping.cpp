@@ -39,9 +39,44 @@
 #include <mutex>
 #include <thread>
 #include <condition_variable>
+#include <chrono>
+#include <cctype>
+#include <boost/filesystem.hpp>
 
 namespace
 {
+  using SteadyClock = std::chrono::steady_clock;
+
+  double ElapsedMilliseconds(const SteadyClock::time_point &start)
+  {
+    return std::chrono::duration<double, std::milli>(
+               SteadyClock::now() - start)
+        .count();
+  }
+
+  std::string RuntimeFileSuffix(std::string robot_namespace)
+  {
+    while (!robot_namespace.empty() && robot_namespace.front() == '/')
+    {
+      robot_namespace.erase(robot_namespace.begin());
+    }
+
+    if (robot_namespace.empty())
+    {
+      robot_namespace = "root";
+    }
+
+    for (char &character : robot_namespace)
+    {
+      const unsigned char value = static_cast<unsigned char>(character);
+      if (!std::isalnum(value) && character != '-' && character != '_')
+      {
+        character = '_';
+      }
+    }
+    return robot_namespace;
+  }
+
   constexpr int kPoseFailure = 0;
   constexpr int kPoseCollision = 1;
   constexpr int kPoseSuccess = 2;
@@ -1306,6 +1341,27 @@ namespace
   }
 } // namespace
 
+Mapping::RuntimeCycleMetrics::RuntimeCycleMetrics()
+    : input_point_count(0),
+      filtered_point_count(0),
+      cycle_valid(false),
+      status("not_started"),
+      ros_to_pcl_ms(0.0),
+      queue_wait_ms(0.0),
+      task_setup_ms(0.0),
+      preprocessing_ms(0.0),
+      height_mapping_ms(0.0),
+      bgk_mapping_ms(0.0),
+      startup_hole_fill_ms(0.0),
+      geometric_mapping_ms(0.0),
+      step_mapping_ms(0.0),
+      traversability_mapping_ms(0.0),
+      fine_traversability_mapping_ms(0.0),
+      viewpoint_update_ms(0.0),
+      map_publication_ms(0.0)
+{
+}
+
 #ifndef MULTI_ROBOT_MAPPING_NO_MAIN
 /**
  * @brief Main function - ROS node entry point
@@ -1382,13 +1438,16 @@ Mapping::Mapping(ros::NodeHandle &nh, ros::NodeHandle &pnh)
       local_map_size_x_(40.0),
       local_map_size_y_(40.0),
       should_exit_(false),
-      active_task_count_(0)
+      active_task_count_(0),
+      enable_runtime_csv_(true),
+      runtime_cycle_index_(0)
 {
   ROS_INFO("Mapping constructor called");
 
   ROS_INFO("Mapping::init() - Initializing mapping node");
 
   loadParameters();
+  initializeRuntimeCSV();
 
   // Load the exact ViewPointManager/GridWorld geometry before any scan is
   // processed.  The mapping node then infers the same origin from synchronized
@@ -1582,6 +1641,12 @@ Mapping::~Mapping()
   // No task may retain `this` after Mapping starts destruction.
   globalPublishWorker().shutdown();
 
+  if (runtime_csv_file_.is_open())
+  {
+    runtime_csv_file_.flush();
+    runtime_csv_file_.close();
+  }
+
   ROS_INFO("Mapping destructor called");
 }
 
@@ -1608,6 +1673,9 @@ void Mapping::loadParameters()
 
   pnh_.param<std::string>("wheeled_model_path", wheeled_model_path_, default_wheeled_model_path);
   pnh_.param<std::string>("tracked_model_path", tracked_model_path_, default_tracked_model_path);
+  pnh_.param<bool>("enable_runtime_csv", enable_runtime_csv_, true);
+  pnh_.param<std::string>("runtime_csv_output_dir", runtime_csv_output_dir_,
+                          package_path + "/runtime");
 
   // Load sensor range parameters
   pnh_.param<double>("max_range", max_range_, 100.0);
@@ -1741,6 +1809,116 @@ void Mapping::loadParameters()
   ROS_INFO("  - Fine slope range: [%.2f, %.2f]", fine_slope_min_, fine_slope_max_);
   ROS_INFO("  - Wheeled model path: %s", wheeled_model_path_.c_str());
   ROS_INFO("  - Tracked model path: %s", tracked_model_path_.c_str());
+  ROS_INFO("  - Runtime CSV: %s", enable_runtime_csv_ ? "enabled" : "disabled");
+}
+
+void Mapping::initializeRuntimeCSV()
+{
+  runtime_log_start_wall_time_ = ros::WallTime::now();
+  if (!enable_runtime_csv_)
+  {
+    return;
+  }
+
+  if (runtime_csv_output_dir_.empty())
+  {
+    runtime_csv_output_dir_ = ros::package::getPath("obstacle_mapping") + "/runtime";
+  }
+
+  boost::system::error_code directory_error;
+  boost::filesystem::create_directories(runtime_csv_output_dir_, directory_error);
+  if (directory_error)
+  {
+    ROS_ERROR("[RuntimeCSV] Failed to create directory %s: %s",
+              runtime_csv_output_dir_.c_str(), directory_error.message().c_str());
+    return;
+  }
+
+  const std::string robot_name = RuntimeFileSuffix(ros::this_node::getNamespace());
+  runtime_csv_path_ =
+      (boost::filesystem::path(runtime_csv_output_dir_) /
+       ("mapping_runtime_" + robot_name + ".csv"))
+          .string();
+
+  runtime_csv_file_.open(runtime_csv_path_, std::ios::out | std::ios::trunc);
+  if (!runtime_csv_file_.is_open())
+  {
+    ROS_ERROR("[RuntimeCSV] Failed to open: %s", runtime_csv_path_.c_str());
+    return;
+  }
+
+  runtime_csv_file_
+      << "cycle_index,robot_namespace,ros_time_s,source_stamp_s,wall_elapsed_s,"
+      << "cycle_valid,status,input_point_count,filtered_point_count,fine_enabled,"
+      << "ros_to_pcl_ms,queue_wait_ms,task_setup_ms,preprocessing_ms,"
+      << "height_mapping_ms,bgk_mapping_ms,startup_hole_fill_ms,"
+      << "geometric_mapping_ms,step_mapping_ms,traversability_mapping_ms,"
+      << "fine_traversability_mapping_ms,viewpoint_update_ms,map_publication_ms,"
+      << "algorithm_total_ms,accounted_total_ms,cycle_wall_ms,unaccounted_ms,"
+      << "end_to_end_ms\n";
+  runtime_csv_file_.flush();
+
+  ROS_INFO("[RuntimeCSV] Writing mapping timing to %s", runtime_csv_path_.c_str());
+}
+
+void Mapping::writeRuntimeCycleToCSV(const ros::Time &source_stamp,
+                                     double cycle_wall_ms)
+{
+  if (!runtime_csv_file_.is_open())
+  {
+    return;
+  }
+
+  const RuntimeCycleMetrics &metrics = current_runtime_metrics_;
+  const double algorithm_total_ms =
+      metrics.preprocessing_ms + metrics.height_mapping_ms +
+      metrics.bgk_mapping_ms + metrics.startup_hole_fill_ms +
+      metrics.geometric_mapping_ms + metrics.step_mapping_ms +
+      metrics.traversability_mapping_ms +
+      metrics.fine_traversability_mapping_ms;
+  const double accounted_total_ms =
+      metrics.task_setup_ms + algorithm_total_ms +
+      metrics.viewpoint_update_ms + metrics.map_publication_ms;
+  const double unaccounted_ms = cycle_wall_ms - accounted_total_ms;
+  const double end_to_end_ms =
+      metrics.ros_to_pcl_ms + metrics.queue_wait_ms + cycle_wall_ms;
+
+  runtime_csv_file_ << std::fixed << std::setprecision(6)
+                    << runtime_cycle_index_++ << ','
+                    << RuntimeFileSuffix(ros::this_node::getNamespace()) << ','
+                    << ros::Time::now().toSec() << ','
+                    << source_stamp.toSec() << ','
+                    << (ros::WallTime::now() - runtime_log_start_wall_time_).toSec() << ','
+                    << (metrics.cycle_valid ? 1 : 0) << ','
+                    << metrics.status << ','
+                    << metrics.input_point_count << ','
+                    << metrics.filtered_point_count << ','
+                    << (enable_fine_traversability_ ? 1 : 0) << ','
+                    << metrics.ros_to_pcl_ms << ','
+                    << metrics.queue_wait_ms << ','
+                    << metrics.task_setup_ms << ','
+                    << metrics.preprocessing_ms << ','
+                    << metrics.height_mapping_ms << ','
+                    << metrics.bgk_mapping_ms << ','
+                    << metrics.startup_hole_fill_ms << ','
+                    << metrics.geometric_mapping_ms << ','
+                    << metrics.step_mapping_ms << ','
+                    << metrics.traversability_mapping_ms << ','
+                    << metrics.fine_traversability_mapping_ms << ','
+                    << metrics.viewpoint_update_ms << ','
+                    << metrics.map_publication_ms << ','
+                    << algorithm_total_ms << ','
+                    << accounted_total_ms << ','
+                    << cycle_wall_ms << ','
+                    << unaccounted_ms << ','
+                    << end_to_end_ms << '\n';
+  runtime_csv_file_.flush();
+
+  if (!runtime_csv_file_)
+  {
+    ROS_ERROR_THROTTLE(2.0, "[RuntimeCSV] Failed while writing: %s",
+                       runtime_csv_path_.c_str());
+  }
 }
 
 // ==================== Vehicle Model Loading ====================
@@ -1941,8 +2119,10 @@ void Mapping::processSynchronizedMessages(const sensor_msgs::PointCloud2ConstPtr
   // =====================================
   // 这里使用 pcl::PointXYZ，意味着只保留 xyz 坐标
   // 如果原始点云带 intensity/ring/time 等字段，这里会被丢弃
+  const SteadyClock::time_point ros_to_pcl_start = SteadyClock::now();
   pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>());
   pcl::fromROSMsg(*cloud_msg, *cloud);
+  const double ros_to_pcl_ms = ElapsedMilliseconds(ros_to_pcl_start);
 
   // =====================================
   // [D] 构造异步任务 ProcessingTask
@@ -1954,6 +2134,8 @@ void Mapping::processSynchronizedMessages(const sensor_msgs::PointCloud2ConstPtr
   task.position = position;
   task.orientation = orientation;
   task.timestamp = cloud_msg->header.stamp;
+  task.ros_to_pcl_ms = ros_to_pcl_ms;
+  task.enqueue_wall_time = ros::WallTime::now();
 
   // ==========================================
   // [E] 入队：把任务放进 processing_queue_
@@ -2056,6 +2238,12 @@ void Mapping::processingThreadFunc()
     // ==========================================
     if (has_task)
     {
+      const SteadyClock::time_point cycle_start = SteadyClock::now();
+      current_runtime_metrics_ = RuntimeCycleMetrics();
+      current_runtime_metrics_.ros_to_pcl_ms = task.ros_to_pcl_ms;
+      current_runtime_metrics_.queue_wait_ms =
+          (ros::WallTime::now() - task.enqueue_wall_time).toSec() * 1000.0;
+
       if (debug_mode_)
       {
         ROS_DEBUG("Processing dequeued task with %lu points", task.cloud->size());
@@ -2069,6 +2257,7 @@ void Mapping::processingThreadFunc()
       // 但如果 processPointCloud/publishGridMapOnce 内部依赖 vehicle_* 作为当前位姿，
       // 那就需要在这里更新，保证处理使用的是“与该点云对应的位姿快照”
 
+      const SteadyClock::time_point task_setup_start = SteadyClock::now();
       Eigen::Vector3d vehicle_position;
       Eigen::Quaterniond vehicle_orientation;
       {
@@ -2085,6 +2274,8 @@ void Mapping::processingThreadFunc()
         std::lock_guard<std::mutex> map_lock(gridmap_publish_mutex_);
         height_map_.setTimestamp(task.timestamp.toNSec());
       }
+      current_runtime_metrics_.task_setup_ms =
+          ElapsedMilliseconds(task_setup_start);
 
       // ------------------------------------------
       // [B2] 真正处理点云（重计算：滤波/配准/栅格更新等）
@@ -2094,6 +2285,7 @@ void Mapping::processingThreadFunc()
       // Use the pose carried by this exact processing task.  This reproduces
       // ViewPointManager's initial origin and rollover before the map produced
       // from the same scan is published, without waiting for viewpoint_origin.
+      const SteadyClock::time_point viewpoint_update_start = SteadyClock::now();
       viewpointGridAlignment().update(task.position, task.timestamp);
 
       // 每处理一组同步点云和里程计，都发布一次当前viewpoint原点。
@@ -2118,12 +2310,20 @@ void Mapping::processingThreadFunc()
                                           << origin_msg.point.y << ", "
                                           << origin_msg.point.z << "]");
       }
+      current_runtime_metrics_.viewpoint_update_ms =
+          ElapsedMilliseconds(viewpoint_update_start);
 
       // ------------------------------------------
       // [B3] 处理完立刻发布一次栅格地图
       // ------------------------------------------
       // 注意：如果 publishGridMapOnce 里也用到共享资源，要确保内部已正确加锁
+      const SteadyClock::time_point map_publication_start = SteadyClock::now();
       publishGridMapOnce();
+      current_runtime_metrics_.map_publication_ms =
+          ElapsedMilliseconds(map_publication_start);
+
+      const double cycle_wall_ms = ElapsedMilliseconds(cycle_start);
+      writeRuntimeCycleToCSV(task.timestamp, cycle_wall_ms);
 
       // ==========================================
       // [C] 任务结束：更新 active_task_count_ 并通知等待 idle 的线程
@@ -2166,11 +2366,14 @@ void Mapping::waitUntilIdle()
 
 void Mapping::processPointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, Eigen::Vector3d current_pos)
 {
+  current_runtime_metrics_.input_point_count = cloud ? cloud->size() : 0;
+
   // =========================
   // [0] 输入检查：空点云直接返回
   // =========================
-  if (cloud->empty())
+  if (!cloud || cloud->empty())
   {
+    current_runtime_metrics_.status = "empty_input";
     ROS_WARN("Received empty point cloud");
     return;
   }
@@ -2186,6 +2389,7 @@ void Mapping::processPointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud
   // =====================================================
   // filtered_cloud 用于存储过滤后的点云
   // reserve(cloud->size())：预分配容量，减少 push_back 时反复扩容，提高效率
+  const SteadyClock::time_point preprocessing_start = SteadyClock::now();
   auto filtered_cloud = boost::make_shared<pcl::PointCloud<pcl::PointXYZ>>();
   filtered_cloud->reserve(cloud->size());
 
@@ -2225,11 +2429,16 @@ void Mapping::processPointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud
     }
   }
 
+  current_runtime_metrics_.filtered_point_count = filtered_cloud->size();
+  current_runtime_metrics_.preprocessing_ms =
+      ElapsedMilliseconds(preprocessing_start);
+
   // =====================================================
   // [3] 过滤结果检查：若全被过滤掉则返回
   // =====================================================
   if (filtered_cloud->empty())
   {
+    current_runtime_metrics_.status = "no_valid_points";
     ROS_WARN("No points in valid Z range [%.2f, %.2f] and observation range [%.2f m]",
              min_z_, max_z_, max_range_);
     return;
@@ -2246,35 +2455,35 @@ void Mapping::processPointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud
   // =====================================================
   // [5] Mapping Pipeline：逐步执行并计时
   // =====================================================
-  // 你用 ros::Time::now().toSec() 计时，能用但精度一般
-  // 如果你想更稳定的 profiling，推荐用 ros::WallTime 或 std::chrono
-  double time1 = ros::Time::now().toSec();
-  double time2 = 0.0;
+  // 使用单调时钟，避免 ROS 仿真时间跳变影响模块耗时。
 
   // -----------------------
   // Step 1: Height mapping
   // -----------------------
   // 将点云栅格化，生成高度/统计量（min/max/mean/var 等）
-  time1 = ros::Time::now().toSec();
+  SteadyClock::time_point module_start = SteadyClock::now();
   height_mapping(filtered_cloud);
-  time2 = ros::Time::now().toSec();
-  ROS_INFO("Height mapping: %.4f seconds", time2 - time1);
+  current_runtime_metrics_.height_mapping_ms = ElapsedMilliseconds(module_start);
+  ROS_INFO("Height mapping: %.4f seconds",
+           current_runtime_metrics_.height_mapping_ms / 1000.0);
 
   // -----------------------
   // Step 2: BGK mapping
   // -----------------------
   // 使用 BGK（Bayesian Generalized Kernel 或类似稀疏核推断）
   // 对空栅格进行插值/推断，使地图更稠密平滑
-  time1 = ros::Time::now().toSec();
+  module_start = SteadyClock::now();
   bgk_mapping();
-  time2 = ros::Time::now().toSec();
-  ROS_INFO("BGK mapping: %.4f seconds", time2 - time1);
+  current_runtime_metrics_.bgk_mapping_ms = ElapsedMilliseconds(module_start);
+  ROS_INFO("BGK mapping: %.4f seconds",
+           current_runtime_metrics_.bgk_mapping_ms / 1000.0);
 
   // -------------------------------------------------------------------------
   // 步骤 2.5：初始位置限定范围盲区补全
   // -------------------------------------------------------------------------
   // 不再要求unknown区域完全封闭。只补初始位置固定半径内的
   // elevation_BGK无效栅格，并从盲区边缘有效地形拟合局部平面。
+  const SteadyClock::time_point startup_hole_fill_start = SteadyClock::now();
   static bool startup_fill_configured = false;
   static bool startup_fill_enabled = true;
   static bool startup_position_recorded = false;
@@ -2471,6 +2680,8 @@ void Mapping::processPointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud
       }
     }
   }
+  current_runtime_metrics_.startup_hole_fill_ms =
+      ElapsedMilliseconds(startup_hole_fill_start);
 
   // -----------------------
   // Step 3: Geometric mapping
@@ -2478,28 +2689,32 @@ void Mapping::processPointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud
   // 基于高度图计算几何特征，如：
   // - slope（坡度）
   // - roughness（粗糙度）
-  time1 = ros::Time::now().toSec();
+  module_start = SteadyClock::now();
   geometric_mapping();
-  time2 = ros::Time::now().toSec();
-  ROS_INFO("Geometric mapping: %.4f seconds", time2 - time1);
+  current_runtime_metrics_.geometric_mapping_ms = ElapsedMilliseconds(module_start);
+  ROS_INFO("Geometric mapping: %.4f seconds",
+           current_runtime_metrics_.geometric_mapping_ms / 1000.0);
 
   // -----------------------
   // Step 4: Step mapping
   // -----------------------
   // 计算台阶/突变特征（局部平面补偿后的稳健高度残差）
-  time1 = ros::Time::now().toSec();
+  module_start = SteadyClock::now();
   step_mapping();
-  time2 = ros::Time::now().toSec();
-  ROS_INFO("Step mapping: %.4f seconds", time2 - time1);
+  current_runtime_metrics_.step_mapping_ms = ElapsedMilliseconds(module_start);
+  ROS_INFO("Step mapping: %.4f seconds",
+           current_runtime_metrics_.step_mapping_ms / 1000.0);
 
   // -----------------------
   // Step 5: Traversability mapping
   // -----------------------
   // 将各类地形特征融合为初始可通行性代价/概率（0~1 或 cost）
-  time1 = ros::Time::now().toSec();
+  module_start = SteadyClock::now();
   traversability_mapping();
-  time2 = ros::Time::now().toSec();
-  ROS_INFO("Traversability mapping: %.4f seconds", time2 - time1);
+  current_runtime_metrics_.traversability_mapping_ms =
+      ElapsedMilliseconds(module_start);
+  ROS_INFO("Traversability mapping: %.4f seconds",
+           current_runtime_metrics_.traversability_mapping_ms / 1000.0);
 
   // -----------------------
   // Step 6: Fine-grained Traversability
@@ -2508,16 +2723,20 @@ void Mapping::processPointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud
   // 做更细粒度的可通行性评估
   if (enable_fine_traversability_)
   {
-    time1 = ros::Time::now().toSec();
+    module_start = SteadyClock::now();
     finegrained_traversability_mapping();
-    time2 = ros::Time::now().toSec();
-    ROS_INFO("Fine-grained traversability mapping: %.4f seconds", time2 - time1);
+    current_runtime_metrics_.fine_traversability_mapping_ms =
+        ElapsedMilliseconds(module_start);
+    ROS_INFO("Fine-grained traversability mapping: %.4f seconds",
+             current_runtime_metrics_.fine_traversability_mapping_ms / 1000.0);
   }
   else
   {
     ROS_DEBUG("Fine-grained traversability mapping disabled");
   }
 
+  current_runtime_metrics_.cycle_valid = true;
+  current_runtime_metrics_.status = "ok";
   ROS_INFO("Mapping pipeline completed");
 }
 

@@ -25,7 +25,7 @@ find_package(catkin REQUIRED COMPONENTS
 
 find_package(PCL REQUIRED)
 
-find_package(Boost REQUIRED COMPONENTS system)
+find_package(Boost REQUIRED COMPONENTS system filesystem)
 find_package(Eigen3 REQUIRED)
 
 pkg_check_modules(TBB "tbb")
@@ -60,6 +60,7 @@ include_directories(
   include
   ${catkin_INCLUDE_DIRS}
   ${PCL_INCLUDE_DIRS}
+  ${Boost_INCLUDE_DIRS}
   ${EIGEN3_INCLUDE_DIRS}
   ${TBB_INCLUDE_DIRS}
 )
@@ -102,10 +103,10 @@ add_executable(show_robot_map_pose src/show_robot_map_pose.cpp)
 target_link_libraries(show_robot_map_pose ${catkin_LIBRARIES} ${PCL_LIBRARIES})
 
 add_executable(multi_robot_mapping_node src/multi_robot_mapping.cpp)
-target_link_libraries(multi_robot_mapping_node ${catkin_LIBRARIES} ${PCL_LIBRARIES})
+target_link_libraries(multi_robot_mapping_node ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${Boost_LIBRARIES})
 
 add_executable(multi_robot_mapping_offline_node
   src/multi_robot_mapping_offline.cpp
   src/multi_robot_mapping.cpp)
 target_compile_definitions(multi_robot_mapping_offline_node PRIVATE MULTI_ROBOT_MAPPING_NO_MAIN)
-target_link_libraries(multi_robot_mapping_offline_node ${catkin_LIBRARIES} ${PCL_LIBRARIES})
+target_link_libraries(multi_robot_mapping_offline_node ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${Boost_LIBRARIES})

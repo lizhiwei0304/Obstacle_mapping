@@ -35,6 +35,7 @@
 #include <condition_variable>
 #include <unordered_set>
 #include <atomic>
+#include <cstdint>
 
 class Mapping
 {
@@ -108,10 +109,43 @@ private:
         Eigen::Vector3d position;
         Eigen::Quaterniond orientation;
         ros::Time timestamp;
+        ros::WallTime enqueue_wall_time;
+        double ros_to_pcl_ms;
     };
     std::queue<ProcessingTask> processing_queue_;
     bool skip_old_messages_;   // 若为 true，当新消息到来时跳过队列中的旧消息
     size_t active_task_count_; // 当前正在处理的任务数量
+
+    struct RuntimeCycleMetrics
+    {
+        std::size_t input_point_count;
+        std::size_t filtered_point_count;
+        bool cycle_valid;
+        std::string status;
+        double ros_to_pcl_ms;
+        double queue_wait_ms;
+        double task_setup_ms;
+        double preprocessing_ms;
+        double height_mapping_ms;
+        double bgk_mapping_ms;
+        double startup_hole_fill_ms;
+        double geometric_mapping_ms;
+        double step_mapping_ms;
+        double traversability_mapping_ms;
+        double fine_traversability_mapping_ms;
+        double viewpoint_update_ms;
+        double map_publication_ms;
+
+        RuntimeCycleMetrics();
+    };
+
+    bool enable_runtime_csv_;
+    std::string runtime_csv_output_dir_;
+    std::string runtime_csv_path_;
+    std::ofstream runtime_csv_file_;
+    std::uint64_t runtime_cycle_index_;
+    ros::WallTime runtime_log_start_wall_time_;
+    RuntimeCycleMetrics current_runtime_metrics_;
 
     // 点云存储
     pcl::PointCloud<pcl::PointXYZ>::Ptr current_cloud_;
@@ -262,6 +296,17 @@ private:
      * @brief 加载 ROS 参数
      */
     void loadParameters();
+
+    /**
+     * @brief 初始化逐周期模块耗时 CSV（每次启动覆盖旧文件）
+     */
+    void initializeRuntimeCSV();
+
+    /**
+     * @brief 写入当前点云处理周期的模块耗时
+     */
+    void writeRuntimeCycleToCSV(const ros::Time &source_stamp,
+                                double cycle_wall_ms);
 
     /**
      * @brief 处理输入点云
