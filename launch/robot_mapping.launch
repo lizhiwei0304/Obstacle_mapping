@@ -95,7 +95,7 @@
     <!-- Pose quality and terrain-dependent motion-efficiency fusion. -->
     <arg name="pose_angle_weight" default="0.65" />
     <arg name="pose_support_weight" default="0.20" />
-    <arg name="pose_heading_weight" default="0.15" />
+    <arg name="pose_heading_weight" default="0.00" />
     <arg name="mobility_efficiency_weight" default="1.00" />
     <arg name="efficiency_slope_reference_deg" default="30.0" />
     <arg name="efficiency_roughness_reference" default="0.08" />
@@ -110,13 +110,13 @@
     <arg name="enable_incremental_trav" default="true" />
 
     <!-- Only medium/high-risk uncertain cells enter expensive pose/collision checking. -->
-    <arg name="fine_trav_min" default="0.65" />
+    <arg name="fine_trav_min" default="0.75" />
     <arg name="fine_trav_max" default="0.9" />
-    <arg name="fine_slope_min" default="0.60" />
+    <arg name="fine_slope_min" default="0.70" />
     <arg name="fine_slope_max" default="0.95" />
-    <arg name="fine_roughness_min" default="0.50" />
+    <arg name="fine_roughness_min" default="0.60" />
     <arg name="fine_roughness_max" default="1.0" />
-    <arg name="fine_step_min" default="0.50" />
+    <arg name="fine_step_min" default="0.60" />
     <arg name="fine_step_max" default="1.0" />
     <arg name="fine_roll_threshold_deg" default="30.0" />
     <arg name="fine_pitch_threshold_deg" default="30.0" />

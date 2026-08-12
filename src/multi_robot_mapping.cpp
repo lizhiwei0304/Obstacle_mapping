@@ -1428,11 +1428,11 @@ Mapping::Mapping(ros::NodeHandle &nh, ros::NodeHandle &pnh)
       enable_incremental_geom_(true),
       enable_incremental_step_(true),
       enable_incremental_trav_(true),
-      fine_trav_min_(0.65),
+      fine_trav_min_(0.75),
       fine_trav_max_(0.9),
-      fine_slope_min_(0.60),
+      fine_slope_min_(0.70),
       fine_slope_max_(0.8),
-      fine_roughness_min_(0.50),
+      fine_roughness_min_(0.60),
       fine_roughness_max_(1.0),
       fine_roll_threshold_deg_(30.0),
       fine_pitch_threshold_deg_(30.0),
@@ -1723,11 +1723,11 @@ void Mapping::loadParameters()
   // Load fine-grained traversability range parameters
   // 精细化校核只用于中高风险不确定区。提高下限可避免
   // 在明显平坦区域反复执行昂贵的整车碰撞/支撑姿态求解。
-  pnh_.param<double>("fine_trav_min", fine_trav_min_, 0.65);
+  pnh_.param<double>("fine_trav_min", fine_trav_min_, 0.75);
   pnh_.param<double>("fine_trav_max", fine_trav_max_, 0.9);
-  pnh_.param<double>("fine_slope_min", fine_slope_min_, 0.60);
+  pnh_.param<double>("fine_slope_min", fine_slope_min_, 0.70);
   pnh_.param<double>("fine_slope_max", fine_slope_max_, 0.8);
-  pnh_.param<double>("fine_roughness_min", fine_roughness_min_, 0.50);
+  pnh_.param<double>("fine_roughness_min", fine_roughness_min_, 0.60);
   pnh_.param<double>("fine_roughness_max", fine_roughness_max_, 1.0);
   pnh_.param<double>("fine_roll_threshold_deg", fine_roll_threshold_deg_, 30.0);
   pnh_.param<double>("fine_pitch_threshold_deg", fine_pitch_threshold_deg_, 30.0);
@@ -4125,7 +4125,7 @@ void Mapping::finegrained_traversability_mapping()
 
   static double pose_angle_weight = 0.65;
   static double pose_support_weight = 0.20;
-  static double pose_heading_weight = 0.15;
+  static double pose_heading_weight = 0.00;
   static double efficiency_weight = 1.00;
 
   // 地形严重度使用同一组参考值，保证两种平台的效率项可直接比较。
@@ -4137,7 +4137,7 @@ void Mapping::finegrained_traversability_mapping()
   static double severity_step_weight = 0.40;
 
   // 这些范围作用于“按车型能力阈值归一化后的特征”。
-  static double fine_step_min = 0.50;
+  static double fine_step_min = 0.60;
   static double fine_step_max = 1.00;
 
   auto clamp01 = [](double value)
@@ -4260,7 +4260,7 @@ void Mapping::finegrained_traversability_mapping()
     pnh_.param<double>("pose_support_weight",
                        pose_support_weight, 0.20);
     pnh_.param<double>("pose_heading_weight",
-                       pose_heading_weight, 0.15);
+                       pose_heading_weight, 0.00);
     pnh_.param<double>("mobility_efficiency_weight",
                        efficiency_weight, 1.00);
 
@@ -4276,13 +4276,16 @@ void Mapping::finegrained_traversability_mapping()
                        severity_roughness_weight, 0.25);
     pnh_.param<double>("severity_step_weight",
                        severity_step_weight, 0.40);
-    pnh_.param<double>("fine_step_min", fine_step_min, 0.50);
+    pnh_.param<double>("fine_step_min", fine_step_min, 0.60);
     pnh_.param<double>("fine_step_max", fine_step_max, 1.00);
 
+    // Heading availability is now existential: the first feasible heading is
+    // enough. It must therefore no longer penalize the pose score.
+    pose_heading_weight = 0.0;
     normalizeThreeWeights(pose_angle_weight,
                           pose_support_weight,
                           pose_heading_weight,
-                          0.65, 0.20, 0.15);
+                          0.65, 0.20, 0.00);
     normalizeThreeWeights(severity_slope_weight,
                           severity_roughness_weight,
                           severity_step_weight,
@@ -4986,6 +4989,12 @@ void Mapping::finegrained_traversability_mapping()
             best_stable = is_stable;
             best_support_ratio = support_ratio;
           }
+
+          // The four headings represent alternative ways to traverse this
+          // cell. Once one stable, collision-free heading is found, the
+          // existential traversability condition is satisfied and evaluating
+          // the remaining headings cannot change the passable decision.
+          break;
         }
         else if (pose_status == kPoseCollision)
         {
@@ -5025,16 +5034,8 @@ void Mapping::finegrained_traversability_mapping()
       {
         ++vehicle.count_success;
 
-        const double heading_cost =
-            1.0 -
-            clamp01(
-                static_cast<double>(success_headings) /
-                static_cast<double>(fine_heading_samples));
-
         const double pose_cost =
-            clamp01(
-                best_partial_pose_cost +
-                pose_heading_weight * heading_cost);
+            clamp01(best_partial_pose_cost);
 
         // 精细姿态校核成功后覆盖车型粗略代价。
         // 但明确超过车辆坡度、粗糙度或台阶能力时仍保持不可通行。
