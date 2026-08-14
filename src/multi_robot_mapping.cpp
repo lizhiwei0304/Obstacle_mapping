@@ -139,7 +139,7 @@ namespace
   // 0.2 for traversable terrain and 1.0 for non-traversable terrain.
   bool publish_local_trav_cloud = true;
   std::string local_trav_vehicle_type = "wheeled";
-  std::string local_trav_layer = "traversability_fine_wheeled";
+  std::string local_trav_layer = "traversability_coarse_wheeled";
   std::string local_trav_cloud_topic = "/terrain_map";
   double terrain_map_cost_threshold = 0.98;
   // Preserve the original FitPlane / local_planner Z convention.  After the
@@ -1549,18 +1549,18 @@ Mapping::Mapping(ros::NodeHandle &nh, ros::NodeHandle &pnh)
 
   if (local_trav_vehicle_type == "tracked")
   {
-    local_trav_layer = "traversability_fine_tracked";
+    local_trav_layer = "traversability_coarse_tracked";
   }
   else if (local_trav_vehicle_type == "wheeled")
   {
-    local_trav_layer = "traversability_fine_wheeled";
+    local_trav_layer = "traversability_coarse_wheeled";
   }
   else
   {
     ROS_WARN("Unknown vehicle_type '%s'; falling back to wheeled",
              local_trav_vehicle_type.c_str());
     local_trav_vehicle_type = "wheeled";
-    local_trav_layer = "traversability_fine_wheeled";
+    local_trav_layer = "traversability_coarse_wheeled";
   }
 
   if (publish_local_trav_cloud)
