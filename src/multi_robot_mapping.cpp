@@ -4886,8 +4886,9 @@ void Mapping::finegrained_traversability_mapping()
       }
 
       bool has_success = false;
-      bool has_unstable = false;
       int collision_headings = 0;
+      int unstable_headings = 0;
+      int unknown_headings = 0;
       int success_headings = 0;
 
       double best_partial_pose_cost =
@@ -4953,7 +4954,7 @@ void Mapping::finegrained_traversability_mapping()
           if (std::fabs(roll) > capability.roll_limit_deg ||
               std::fabs(pitch) > capability.pitch_limit_deg)
           {
-            has_unstable = true;
+            ++unstable_headings;
             diagnostic_roll = roll;
             diagnostic_pitch = pitch;
             diagnostic_heading_deg = heading_deg;
@@ -4999,19 +5000,6 @@ void Mapping::finegrained_traversability_mapping()
         else if (pose_status == kPoseCollision)
         {
           ++collision_headings;
-          if (!has_unstable)
-          {
-            diagnostic_roll = roll;
-            diagnostic_pitch = pitch;
-            diagnostic_heading_deg = heading_deg;
-            diagnostic_contacts = contact_points;
-            diagnostic_stable = is_stable;
-            diagnostic_status = pose_status;
-          }
-        }
-        else if (pose_status == kPoseUnstable)
-        {
-          has_unstable = true;
           diagnostic_roll = roll;
           diagnostic_pitch = pitch;
           diagnostic_heading_deg = heading_deg;
@@ -5019,8 +5007,19 @@ void Mapping::finegrained_traversability_mapping()
           diagnostic_stable = is_stable;
           diagnostic_status = pose_status;
         }
-        else if (!has_unstable)
+        else if (pose_status == kPoseUnstable)
         {
+          ++unstable_headings;
+          diagnostic_roll = roll;
+          diagnostic_pitch = pitch;
+          diagnostic_heading_deg = heading_deg;
+          diagnostic_contacts = contact_points;
+          diagnostic_stable = is_stable;
+          diagnostic_status = pose_status;
+        }
+        else
+        {
+          ++unknown_headings;
           diagnostic_roll = roll;
           diagnostic_pitch = pitch;
           diagnostic_heading_deg = heading_deg;
@@ -5060,45 +5059,38 @@ void Mapping::finegrained_traversability_mapping()
             success_headings, terrain_severity,
             cell_metrics.efficiency_adjustment, final_cost);
       }
-      else if (collision_headings == fine_heading_samples)
+      else if (collision_headings + unstable_headings ==
+               fine_heading_samples)
       {
-        ++vehicle.count_collision;
+        if (collision_headings == fine_heading_samples)
+        {
+          ++vehicle.count_collision;
+        }
+        else
+        {
+          ++vehicle.count_failure;
+        }
         (*(vehicle.fine_layer))(idx(0), idx(1)) = 1.0f;
         const double support_ratio = clamp01(
             static_cast<double>(diagnostic_contacts) /
             static_cast<double>(vehicle.nominal_contact_points));
 
+        const bool all_collision =
+            collision_headings == fine_heading_samples;
+
         writeCellRecord(
             vehicle, position,
             slope_value, roughness_value, step_value, coarse_value,
             n_points_value, interpolated_value,
-            diagnostic_heading_deg, kPoseCollision,
-            "collision_all_headings",
+            diagnostic_heading_deg,
+            all_collision ? kPoseCollision : kPoseUnstable,
+            all_collision ? "collision_all_headings"
+                          : "blocked_all_headings",
             diagnostic_roll, diagnostic_pitch,
             diagnostic_contacts, diagnostic_stable,
             raw_slope_deg, raw_roughness, raw_step_m,
             cell_metrics.geo_cost, 1.0, support_ratio, 0,
             terrain_severity, cell_metrics.efficiency_adjustment, 1.0);
-      }
-      else if (has_unstable)
-      {
-        ++vehicle.count_failure;
-        (*(vehicle.fine_layer))(idx(0), idx(1)) = 1.0f;
-        const double support_ratio = clamp01(
-            static_cast<double>(diagnostic_contacts) /
-            static_cast<double>(vehicle.nominal_contact_points));
-
-        writeCellRecord(
-            vehicle, position,
-            slope_value, roughness_value, step_value, coarse_value,
-            n_points_value, interpolated_value,
-            diagnostic_heading_deg, kPoseUnstable, "unstable",
-            diagnostic_roll, diagnostic_pitch,
-            diagnostic_contacts, 0,
-            raw_slope_deg, raw_roughness, raw_step_m,
-            cell_metrics.geo_cost, 1.0, support_ratio,
-            success_headings, terrain_severity,
-            cell_metrics.efficiency_adjustment, 1.0);
       }
       else
       {
@@ -5116,7 +5108,9 @@ void Mapping::finegrained_traversability_mapping()
             slope_value, roughness_value, step_value, coarse_value,
             n_points_value, interpolated_value,
             diagnostic_heading_deg, diagnostic_status,
-            "failure_keep_platform_base",
+            unknown_headings > 0
+                ? "unknown_heading_keep_platform_base"
+                : "failure_keep_platform_base",
             diagnostic_roll, diagnostic_pitch,
             diagnostic_contacts, diagnostic_stable,
             raw_slope_deg, raw_roughness, raw_step_m,

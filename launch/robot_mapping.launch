@@ -110,14 +110,14 @@
     <arg name="enable_incremental_trav" default="true" />
 
     <!-- Only medium/high-risk uncertain cells enter expensive pose/collision checking. -->
-    <arg name="fine_trav_min" default="0.75" />
-    <arg name="fine_trav_max" default="0.9" />
-    <arg name="fine_slope_min" default="0.70" />
-    <arg name="fine_slope_max" default="0.95" />
-    <arg name="fine_roughness_min" default="0.60" />
-    <arg name="fine_roughness_max" default="1.0" />
-    <arg name="fine_step_min" default="0.60" />
-    <arg name="fine_step_max" default="1.0" />
+    <arg name="fine_trav_min" default="0.85" />
+    <arg name="fine_trav_max" default="0.99" />
+    <arg name="fine_slope_min" default="0.85" />
+    <arg name="fine_slope_max" default="0.99" />
+    <arg name="fine_roughness_min" default="0.80" />
+    <arg name="fine_roughness_max" default="0.99" />
+    <arg name="fine_step_min" default="0.80" />
+    <arg name="fine_step_max" default="0.99" />
     <arg name="fine_roll_threshold_deg" default="30.0" />
     <arg name="fine_pitch_threshold_deg" default="30.0" />
 
