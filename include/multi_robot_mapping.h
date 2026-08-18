@@ -151,6 +151,8 @@ private:
     std::ofstream runtime_csv_file_;
     std::uint64_t runtime_cycle_index_;
     ros::WallTime runtime_log_start_wall_time_;
+    ros::Time runtime_log_start_ros_time_;
+    bool runtime_ros_time_initialized_;
     RuntimeCycleMetrics current_runtime_metrics_;
 
     // 点云存储

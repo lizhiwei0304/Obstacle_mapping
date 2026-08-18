@@ -1444,7 +1444,8 @@ Mapping::Mapping(ros::NodeHandle &nh, ros::NodeHandle &pnh)
       should_exit_(false),
       active_task_count_(0),
       enable_runtime_csv_(true),
-      runtime_cycle_index_(0)
+      runtime_cycle_index_(0),
+      runtime_ros_time_initialized_(false)
 {
   ROS_INFO("Mapping constructor called");
 
@@ -1852,7 +1853,7 @@ void Mapping::initializeRuntimeCSV()
   }
 
   runtime_csv_file_
-      << "cycle_index,robot_namespace,ros_time_s,source_stamp_s,wall_elapsed_s,"
+      << "cycle_index,robot_namespace,ros_time_s,source_stamp_s,ros_elapsed_s,wall_elapsed_s,"
       << "cycle_valid,status,input_point_count,filtered_point_count,fine_enabled,"
       << "ros_to_pcl_ms,queue_wait_ms,task_setup_ms,preprocessing_ms,"
       << "height_mapping_ms,bgk_mapping_ms,startup_hole_fill_ms,"
@@ -1893,12 +1894,23 @@ void Mapping::writeRuntimeCycleToCSV(const ros::Time &source_stamp,
           ? 0.0
           : static_cast<double>(metrics.fine_pose_iteration_total) /
                 static_cast<double>(metrics.fine_pose_call_count);
+  const ros::Time ros_now = ros::Time::now();
+  if (!runtime_ros_time_initialized_ && !ros_now.isZero())
+  {
+    runtime_log_start_ros_time_ = ros_now;
+    runtime_ros_time_initialized_ = true;
+  }
+  const double ros_elapsed_s =
+      runtime_ros_time_initialized_
+          ? std::max(0.0, (ros_now - runtime_log_start_ros_time_).toSec())
+          : 0.0;
 
   runtime_csv_file_ << std::fixed << std::setprecision(6)
                     << runtime_cycle_index_++ << ','
                     << RuntimeFileSuffix(ros::this_node::getNamespace()) << ','
-                    << ros::Time::now().toSec() << ','
+                    << ros_now.toSec() << ','
                     << source_stamp.toSec() << ','
+                    << ros_elapsed_s << ','
                     << (ros::WallTime::now() - runtime_log_start_wall_time_).toSec() << ','
                     << (metrics.cycle_valid ? 1 : 0) << ','
                     << metrics.status << ','
