@@ -5,9 +5,9 @@ Panels:
     Property Tree Widget:
       Expanded:
         - /RegisteredScan1/Autocompute Value Bounds1
-        - /LocalPath1
+        - /GlobalGridMap1
       Splitter Ratio: 0.5543237328529358
-    Tree Height: 305
+    Tree Height: 558
   - Class: rviz/Selection
     Name: Selection
   - Class: rviz/Tool Properties
@@ -119,10 +119,10 @@ Visualization Manager:
       Autocompute Intensity Bounds: false
       Class: grid_map_rviz_plugin/GridMap
       Color: 200; 200; 200
-      Color Layer: traversability_fine_wheeled
+      Color Layer: traversability_coarse_wheeled
       Color Transformer: IntensityLayer
-      Enabled: false
-      Height Layer: traversability_fine_wheeled
+      Enabled: true
+      Height Layer: traversability_coarse_wheeled
       Height Transformer: Layer
       History Length: 1
       Invert Rainbow: false
@@ -135,15 +135,15 @@ Visualization Manager:
       Topic: /vehicle2/trav_map
       Unreliable: false
       Use Rainbow: false
-      Value: false
+      Value: true
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Class: grid_map_rviz_plugin/GridMap
       Color: 200; 200; 200
-      Color Layer: traversability_fine_wheeled
+      Color Layer: traversability_coarse_wheeled
       Color Transformer: IntensityLayer
       Enabled: false
-      Height Layer: traversability_fine_wheeled
+      Height Layer: traversability_coarse_wheeled
       Height Transformer: Layer
       History Length: 1
       Invert Rainbow: false
@@ -210,7 +210,7 @@ Visualization Manager:
       Color: 255; 255; 255
       Color Transformer: Intensity
       Decay Time: 0
-      Enabled: true
+      Enabled: false
       Invert Rainbow: false
       Max Color: 255; 255; 255
       Min Color: 0; 0; 0
@@ -225,12 +225,12 @@ Visualization Manager:
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: true
-      Value: true
+      Value: false
     - Alpha: 1
       Buffer Length: 1
       Class: rviz/Path
       Color: 25; 255; 0
-      Enabled: true
+      Enabled: false
       Head Diameter: 0.30000001192092896
       Head Length: 0.20000000298023224
       Length: 0.30000001192092896
@@ -249,18 +249,18 @@ Visualization Manager:
       Shaft Length: 0.10000000149011612
       Topic: /vehicle2/path
       Unreliable: false
-      Value: true
+      Value: false
     - Alpha: 1
       Class: rviz/PointStamped
       Color: 204; 41; 204
-      Enabled: true
+      Enabled: false
       History Length: 1
       Name: Waypoint
       Queue Size: 10
       Radius: 1
       Topic: /vehicle2/way_point
       Unreliable: false
-      Value: true
+      Value: false
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
@@ -413,7 +413,7 @@ Visualization Manager:
       Buffer Length: 1
       Class: rviz/Path
       Color: 25; 255; 0
-      Enabled: true
+      Enabled: false
       Head Diameter: 0.30000001192092896
       Head Length: 0.20000000298023224
       Length: 0.30000001192092896
@@ -432,7 +432,7 @@ Visualization Manager:
       Shaft Length: 0.10000000149011612
       Topic: /vehicle2/global_path_full
       Unreliable: false
-      Value: true
+      Value: false
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
@@ -445,7 +445,7 @@ Visualization Manager:
       Color: 255; 255; 255
       Color Transformer: Intensity
       Decay Time: 0
-      Enabled: true
+      Enabled: false
       Invert Rainbow: false
       Max Color: 255; 255; 255
       Min Color: 0; 0; 0
@@ -460,7 +460,7 @@ Visualization Manager:
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: true
-      Value: true
+      Value: false
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
@@ -473,7 +473,7 @@ Visualization Manager:
       Color: 255; 255; 255
       Color Transformer: Intensity
       Decay Time: 0
-      Enabled: true
+      Enabled: false
       Invert Rainbow: false
       Max Color: 255; 255; 255
       Min Color: 0; 0; 0
@@ -488,12 +488,12 @@ Visualization Manager:
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: true
-      Value: true
+      Value: false
     - Alpha: 1
       Buffer Length: 1
       Class: rviz/Path
       Color: 85; 85; 255
-      Enabled: true
+      Enabled: false
       Head Diameter: 0.30000001192092896
       Head Length: 0.20000000298023224
       Length: 0.30000001192092896
@@ -512,7 +512,7 @@ Visualization Manager:
       Shaft Length: 0.10000000149011612
       Topic: /vehicle2/local_path
       Unreliable: false
-      Value: true
+      Value: false
   Enabled: true
   Global Options:
     Background Color: 0; 0; 0
@@ -543,7 +543,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 69.42488098144531
+      Distance: 77.75586700439453
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -551,9 +551,9 @@ Visualization Manager:
         Value: false
       Field of View: 0.7853981852531433
       Focal Point:
-        X: -0.49136728048324585
-        Y: -0.0501527264714241
-        Z: 7.626190185546875
+        X: 1.395114541053772
+        Y: -0.5259121060371399
+        Z: 7.626702308654785
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
@@ -561,7 +561,7 @@ Visualization Manager:
       Near Clip Distance: 0.009999999776482582
       Pitch: 1.5697963237762451
       Target Frame: vehicle2/vehicle
-      Yaw: 1.59000563621521
+      Yaw: 1.5700056552886963
     Saved: ~
 Window Geometry:
   Displays:

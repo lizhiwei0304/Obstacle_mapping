@@ -24,8 +24,8 @@
     <arg name="map_resolution" default="0.3" />
     <arg name="map_length_x" default="1000.0" />
     <arg name="map_length_y" default="1000.0" />
-    <arg name="local_map_size_x" default="10.0" />
-    <arg name="local_map_size_y" default="10.0" />
+    <arg name="local_map_size_x" default="20.0" />
+    <arg name="local_map_size_y" default="20.0" />
     <arg name="bgk_kernel_size" default="0.6" />
 
     <!-- Fill only a small closed unknown component at the initial pose. -->
@@ -58,12 +58,12 @@
     <arg name="fine_heading_samples" default="4" />
 
     <!-- Wheeled-platform capability and geometry-cost parameters. -->
-    <!-- <arg name="wheeled_slope_limit_deg" default="16.0" />
-    <arg name="wheeled_roughness_limit" default="0.04" />
-    <arg name="wheeled_step_limit_m" default="0.04" /> -->
-    <arg name="wheeled_slope_limit_deg" default="18.0" />
+    <arg name="wheeled_slope_limit_deg" default="20.0" />
+    <arg name="wheeled_roughness_limit" default="0.06" />
+    <arg name="wheeled_step_limit_m" default="0.06" />
+    <!-- <arg name="wheeled_slope_limit_deg" default="18.0" />
     <arg name="wheeled_roughness_limit" default="0.12" />
-    <arg name="wheeled_step_limit_m" default="0.10" />
+    <arg name="wheeled_step_limit_m" default="0.10" /> -->
     <arg name="wheeled_geo_slope_weight" default="0.34" />
     <arg name="wheeled_geo_roughness_weight" default="0.33" />
     <arg name="wheeled_geo_step_weight" default="0.33" />
@@ -126,7 +126,7 @@
     <arg name="fine_debug_csv_path" default="$(find obstacle_mapping)/$(arg ns)_fine_traversability_debug.csv" />
     <arg name="fine_debug_csv_append" default="false" />
     <arg name="fine_debug_csv_max_cycles" default="50" />
-    <arg name="enable_fine_iteration_csv" default="true" />
+    <arg name="enable_fine_iteration_csv" default="false" />
     <arg name="fine_iteration_csv_path" default="$(arg runtime_csv_output_dir)/fine_pose_iterations_$(arg ns).csv" />
 
     <arg name="skip_old_messages" default="true" />
