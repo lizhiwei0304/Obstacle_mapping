@@ -10,6 +10,13 @@
     <!-- Publish PlaneMap-compatible intensity values: platform cost <= threshold -> 0.2, otherwise -> 1.0. -->
     <arg name="terrain_map_cost_threshold" default="0.98" />
 
+    <!-- terrain_map_ext keeps the original height point and adds collision
+         markers around TARE's viewpoint height for obstacle cells. -->
+    <arg name="terrain_map_ext_collision_cost_threshold" default="0.98" />
+    <arg name="terrain_map_ext_collision_z_offset" default="0.75" />
+    <arg name="terrain_map_ext_collision_z_half_span" default="0.20" />
+    <arg name="terrain_map_ext_collision_sample_count" default="3" />
+
     <!-- Used only when both terrain elevation and BGK elevation are unknown. -->
     <arg name="unknown_height_offset" default="0.0" />
     <arg name="frame_id" default="map" />
@@ -157,6 +164,10 @@
         <param name="publish_traversability_cloud" value="$(arg publish_traversability_cloud)" />
         <param name="traversability_cloud_topic" value="$(arg traversability_cloud_topic)" />
         <param name="terrain_map_cost_threshold" value="$(arg terrain_map_cost_threshold)" />
+        <param name="terrain_map_ext_collision_cost_threshold" value="$(arg terrain_map_ext_collision_cost_threshold)" />
+        <param name="terrain_map_ext_collision_z_offset" value="$(arg terrain_map_ext_collision_z_offset)" />
+        <param name="terrain_map_ext_collision_z_half_span" value="$(arg terrain_map_ext_collision_z_half_span)" />
+        <param name="terrain_map_ext_collision_sample_count" value="$(arg terrain_map_ext_collision_sample_count)" />
         <param name="unknown_height_offset" value="$(arg unknown_height_offset)" />
 
         <!-- Sensor range parameters -->

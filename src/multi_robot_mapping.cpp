@@ -170,6 +170,14 @@ namespace
   bool publish_viewpoint_aligned_terrain_cloud = true;
   std::string viewpoint_aligned_terrain_cloud_topic = "terrain_map_ext";
   std::string viewpoint_aligned_height_layer = "elevation_BGK";
+  // Keep one low-intensity point at the original terrain height for viewpoint
+  // height assignment. Obstacle cells additionally get high-intensity marker
+  // points near TARE's viewpoint height so they enter PlanningEnv collision
+  // checks without changing the selected terrain height.
+  double terrain_map_ext_collision_cost_threshold = 0.98;
+  double terrain_map_ext_collision_z_offset = 0.75;
+  double terrain_map_ext_collision_z_half_span = 0.2;
+  int terrain_map_ext_collision_sample_count = 3;
   ros::Publisher viewpoint_aligned_terrain_cloud_publisher;
 
   /**
@@ -495,11 +503,13 @@ namespace
     const grid_map::Size output_size = output_map.getSize();
     terrain_cloud.points.reserve(
         static_cast<std::size_t>(output_size(0)) *
-        static_cast<std::size_t>(output_size(1)));
+        static_cast<std::size_t>(output_size(1)) *
+        static_cast<std::size_t>(1 + terrain_map_ext_collision_sample_count));
 
     std::size_t invalid_height_count = 0;
     std::size_t traversable_count = 0;
     std::size_t obstacle_count = 0;
+    std::size_t collision_marker_count = 0;
 
     for (grid_map::GridMapIterator it(output_map); !it.isPastEnd(); ++it)
     {
@@ -522,19 +532,47 @@ namespace
         const float traversability = output_map.at(local_trav_layer, *it);
         is_obstacle = std::isfinite(traversability) &&
                       traversability >
-                          static_cast<float>(terrain_map_cost_threshold);
+                          static_cast<float>(terrain_map_ext_collision_cost_threshold);
       }
 
+      // Height sample: keep the original elevation and a non-collision
+      // intensity. This is the point used by SetViewPointHeightWithTerrain().
       pcl::PointXYZI point;
       point.x = static_cast<float>(position.x());
       point.y = static_cast<float>(position.y());
       point.z = height;
-      point.intensity = is_obstacle ? 1.0f : 0.2f;
+      point.intensity = 0.2f;
       terrain_cloud.points.push_back(point);
 
       if (is_obstacle)
       {
         ++obstacle_count;
+
+        // Collision samples sit around the viewpoint height. The original
+        // low point above remains present, so the minimum terrain height
+        // selected by TARE is unchanged.
+        for (int sample_index = 0;
+             sample_index < terrain_map_ext_collision_sample_count;
+             ++sample_index)
+        {
+          double normalized_offset = 0.0;
+          if (terrain_map_ext_collision_sample_count > 1)
+          {
+            normalized_offset =
+                2.0 * static_cast<double>(sample_index) /
+                    static_cast<double>(terrain_map_ext_collision_sample_count - 1) -
+                1.0;
+          }
+
+          pcl::PointXYZI collision_point = point;
+          collision_point.z = static_cast<float>(
+              static_cast<double>(height) +
+              terrain_map_ext_collision_z_offset +
+              normalized_offset * terrain_map_ext_collision_z_half_span);
+          collision_point.intensity = 1.0f;
+          terrain_cloud.points.push_back(collision_point);
+          ++collision_marker_count;
+        }
       }
       else
       {
@@ -557,10 +595,11 @@ namespace
 
     ROS_INFO_THROTTLE(
         1.0,
-        "Published viewpoint-aligned terrain cloud %s: grid=%dx%d, valid_height=%zu, invalid_height=%zu, traversable=%zu, obstacle=%zu",
+        "Published viewpoint-aligned terrain cloud %s: grid=%dx%d, height_points=%zu, invalid_height=%zu, traversable_cells=%zu, obstacle_cells=%zu, collision_markers=%zu",
         viewpoint_aligned_terrain_cloud_publisher.getTopic().c_str(),
-        output_size(0), output_size(1), terrain_cloud.points.size(),
-        invalid_height_count, traversable_count, obstacle_count);
+        output_size(0), output_size(1),
+        traversable_count + obstacle_count, invalid_height_count,
+        traversable_count, obstacle_count, collision_marker_count);
   }
 
   /**
@@ -1593,15 +1632,33 @@ Mapping::Mapping(ros::NodeHandle &nh, ros::NodeHandle &pnh)
   pnh_.param<std::string>("viewpoint_aligned_height_layer",
                           viewpoint_aligned_height_layer,
                           "elevation_BGK");
+  pnh_.param<double>("terrain_map_ext_collision_cost_threshold",
+                     terrain_map_ext_collision_cost_threshold, 0.98);
+  pnh_.param<double>("terrain_map_ext_collision_z_offset",
+                     terrain_map_ext_collision_z_offset, 0.75);
+  pnh_.param<double>("terrain_map_ext_collision_z_half_span",
+                     terrain_map_ext_collision_z_half_span, 0.2);
+  pnh_.param<int>("terrain_map_ext_collision_sample_count",
+                  terrain_map_ext_collision_sample_count, 3);
+  terrain_map_ext_collision_cost_threshold = std::max(
+      0.0, std::min(1.0, terrain_map_ext_collision_cost_threshold));
+  terrain_map_ext_collision_z_half_span =
+      std::max(0.0, terrain_map_ext_collision_z_half_span);
+  terrain_map_ext_collision_sample_count = std::max(
+      1, std::min(20, terrain_map_ext_collision_sample_count));
 
   if (publish_viewpoint_aligned_terrain_cloud)
   {
     viewpoint_aligned_terrain_cloud_publisher =
         nh_.advertise<sensor_msgs::PointCloud2>(
             viewpoint_aligned_terrain_cloud_topic, 1, false);
-    ROS_INFO("Publishing viewpoint-aligned terrain height cloud on %s using layer %s",
+    ROS_INFO("Publishing viewpoint-aligned terrain/collision cloud on %s using layer %s (cost_threshold=%.3f, collision_z_offset=%.2f, half_span=%.2f, samples=%d)",
              viewpoint_aligned_terrain_cloud_publisher.getTopic().c_str(),
-             viewpoint_aligned_height_layer.c_str());
+             viewpoint_aligned_height_layer.c_str(),
+             terrain_map_ext_collision_cost_threshold,
+             terrain_map_ext_collision_z_offset,
+             terrain_map_ext_collision_z_half_span,
+             terrain_map_ext_collision_sample_count);
   }
   else
   {
